@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="src/SimpleLyrics.Core/SimpleLyrics.Core.csproj" />
+  <Project Path="src/SimpleLyrics.App/SimpleLyrics.App.csproj" />
+</Solution>

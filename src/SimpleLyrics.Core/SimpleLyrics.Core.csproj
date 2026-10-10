@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    SimpleLyrics.Core —— 无 UI 依赖的纯逻辑层。
+    包含：音频解码/播放封装、波形峰值生成与缓存、LRC 解析与生成、
+          打轴编辑操作与撤销栈。
+    刻意不引用任何 Avalonia 类型，以便用单元测试快速验证。
+  -->
+  <PropertyGroup>
+    <RootNamespace>SimpleLyrics.Core</RootNamespace>
+    <AssemblyName>SimpleLyrics.Core</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="NAudio" Version="$(NAudioVersion)" />
+  </ItemGroup>
+
+</Project>

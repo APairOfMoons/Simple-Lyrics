@@ -1,0 +1,22 @@
+<Project>
+
+  <!-- 全解决方案统一的构建属性。各 csproj 只声明自己特有的部分。 -->
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <SatelliteResourceLanguages>zh-Hans;en</SatelliteResourceLanguages>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CA1416</NoWarn>
+  </PropertyGroup>
+
+  <!-- 依赖版本集中管理，避免各项目版本漂移。 -->
+  <PropertyGroup>
+    <AvaloniaVersion>11.3.22</AvaloniaVersion>
+    <NAudioVersion>3.1.0</NAudioVersion>
+    <CommunityToolkitMvvmVersion>8.4.2</CommunityToolkitMvvmVersion>
+  </PropertyGroup>
+
+</Project>

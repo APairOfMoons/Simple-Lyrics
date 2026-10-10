@@ -1,0 +1,17 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="SimpleLyrics.App.Views.MainWindow"
+        Title="Simple Lyrics"
+        Width="1200" Height="720"
+        MinWidth="900" MinHeight="560">
+
+  <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="8">
+    <TextBlock Text="Simple Lyrics"
+               FontSize="32" FontWeight="SemiBold"
+               HorizontalAlignment="Center" />
+    <TextBlock Text="骨架已就绪 —— 等待接入音频与波形模块"
+               Opacity="0.6"
+               HorizontalAlignment="Center" />
+  </StackPanel>
+
+</Window>
