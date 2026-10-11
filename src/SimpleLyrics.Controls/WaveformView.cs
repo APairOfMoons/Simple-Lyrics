@@ -254,6 +254,29 @@ public sealed class WaveformView : Control
     public static readonly StyledProperty<bool> IsPlayingProperty =
         AvaloniaProperty.Register<WaveformView, bool>(nameof(IsPlaying));
 
+    /// <summary>
+    /// 暂时锁住缩放。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 只有一个使用者：歌词栏里正在拖动标识线的时候。缩放是<b>唯一</b>能改变「两条标识线的
+    /// 屏幕间距」的东西，而拖动期间不重算合并与省略行数的前提，正是那个间距不变
+    /// （见 <see cref="LyricTrackView.GroupInto"/>）。若拖到一半缩放忽然变了，
+    /// 手里的那几条会连同整屏的分簇一起跳一下，而用户根本没有要求缩放。
+    /// </para>
+    /// <para>
+    /// <b>锁的是缩放，不是滚动。</b>把远处的目标挪进视野恰恰要靠滚动，所以
+    /// <c>Ctrl+滚轮</c>在这段时间里降级成普通滚动，而不是变成一个什么都不做的死区——
+    /// 手势还在进行中，让它在能做的那一半上继续起作用，比整片失效好得多。
+    /// </para>
+    /// <para>
+    /// 判定写在 <see cref="ZoomBy"/> 里而不是滚轮处理里：缩放语义只此一处入口，
+    /// 将来多出「放大 / 缩小」按钮时它们自动受同一约束。
+    /// </para>
+    /// </remarks>
+    public static readonly StyledProperty<bool> ZoomLockedProperty =
+        AvaloniaProperty.Register<WaveformView, bool>(nameof(ZoomLocked));
+
     /// <summary>已解码缓存区间的起始时刻（秒）。</summary>
     public static readonly StyledProperty<double> CacheStartSecondsProperty =
         AvaloniaProperty.Register<WaveformView, double>(nameof(CacheStartSeconds), double.NaN);
@@ -316,6 +339,12 @@ public sealed class WaveformView : Control
     {
         get => GetValue(IsPlayingProperty);
         set => SetValue(IsPlayingProperty, value);
+    }
+
+    public bool ZoomLocked
+    {
+        get => GetValue(ZoomLockedProperty);
+        set => SetValue(ZoomLockedProperty, value);
     }
 
     public double CacheStartSeconds
@@ -404,7 +433,8 @@ public sealed class WaveformView : Control
     /// </para>
     /// <para>
     /// 缩放语义只此一处入口，滚轮与将来可能有的「放大 / 缩小」按钮都走它，
-    /// 免得两处各自的锚点慢慢分家。
+    /// 免得两处各自的锚点慢慢分家。因此「暂时不许缩放」这个判断也放在这里，
+    /// 而不是散在调用方——见 <see cref="ZoomLocked"/>。
     /// </para>
     /// </remarks>
     public void ZoomBy(double factor)
@@ -412,6 +442,7 @@ public sealed class WaveformView : Control
         var peaks = Peaks;
         var height = Bounds.Height;
 
+        if (ZoomLocked) return;
         if (peaks is null || height <= 1 || peaks.DurationSeconds <= 0) return;
         if (!double.IsFinite(factor) || factor <= 0) return;
 
@@ -694,33 +725,61 @@ public sealed class WaveformView : Control
     /// </remarks>
     protected override void OnPointerWheelChanged(PointerWheelEventArgs e)
     {
-        var peaks = Peaks;
-        var height = Bounds.Height;
-
-        if (peaks is null || height <= 1 || peaks.DurationSeconds <= 0 || Math.Abs(e.Delta.Y) < 1e-6)
+        if (ApplyWheel(e.Delta.Y, e.KeyModifiers.HasFlag(KeyModifiers.Control)))
         {
-            base.OnPointerWheelChanged(e);
-            return;
-        }
-
-        var pixelsPerSecond = Math.Max(PixelsPerSecond, 1e-6);
-
-        if (e.KeyModifiers.HasFlag(KeyModifiers.Control))
-        {
-            ZoomBy(Math.Pow(ZoomStep, e.Delta.Y));
             e.Handled = true;
             return;
         }
 
+        base.OnPointerWheelChanged(e);
+    }
+
+    /// <summary>
+    /// 应用一次滚轮操作：向上滚是内容上移（看到更早的时间），<paramref name="zoom"/> 为真时改为缩放。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 从事件处理里单独抽出来，是为了让<b>已绑定歌词栏</b>也能用它。那一栏与波形共用同一套
+    /// 时间轴参数，用户在那边滚动时想要的显然是同一件事；而两栏紧挨着，滚轮落在歌词上
+    /// 却毫无反应，是最难向用户解释的一类不一致。
+    /// </para>
+    /// <para>
+    /// 之所以由外部转发而不是把那一栏也变成可交互控件：歌词标识层刻意不参与命中测试
+    /// （它盖在波形之上，参与了就会把拖动、缩放、滚动整片挡掉）。转发只需这几行，
+    /// 而让标识层自己去分辨「哪些指针事件该让给波形」要复杂得多，也脆弱得多。
+    /// </para>
+    /// <para>
+    /// <b>缩放被锁住时，<c>Ctrl+滚轮</c>降级成普通滚动</b>，而不是什么都不做：
+    /// 手势还在进行中（歌词栏里正拖着标识线），让它在能做的那一半上继续起作用。
+    /// </para>
+    /// </remarks>
+    /// <returns>
+    /// 是否真的产生了变化。没有音频时什么也不做并返回 <c>false</c>，
+    /// 调用方据此决定要不要把事件标记为已处理——不标记的话它会继续冒泡，交给别人去试。
+    /// </returns>
+    public bool ApplyWheel(double deltaY, bool zoom)
+    {
+        var peaks = Peaks;
+        var height = Bounds.Height;
+
+        if (peaks is null || height <= 1 || peaks.DurationSeconds <= 0 || Math.Abs(deltaY) < 1e-6) return false;
+
+        if (zoom && !ZoomLocked)
+        {
+            // 缩放语义只此一处入口，滚轮与将来可能有的按钮都走 ZoomBy。
+            ZoomBy(Math.Pow(ZoomStep, deltaY));
+            return true;
+        }
+
         // 向上滚 = 内容上移 = 看到更早的时间。
-        ScrollSeconds -= e.Delta.Y * WheelPixelsPerNotch / pixelsPerSecond;
+        ScrollSeconds -= deltaY * WheelPixelsPerNotch / Math.Max(PixelsPerSecond, 1e-6);
         ClampScroll();
 
         if (IsPlaying) SetCurrentValue(PlayheadSecondsProperty, PlayStartSeconds);
 
         UpdatePlayStartSeconds();
         InvalidateVisual();
-        e.Handled = true;
+        return true;
     }
 
     /// <summary>

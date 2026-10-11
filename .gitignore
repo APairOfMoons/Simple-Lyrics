@@ -67,9 +67,5 @@ third_party/ffmpeg/bin/
 # 重新下载发行包后若直接解压，避免误入库
 ffmpeg-*/
 
-# 验证与测试用的音频素材（约 86 MB）。放在 samples/ 下，也可能被顺手丢在仓库根。
+# 验证与测试用的音频素材（约 86 MB）。放在 samples/ 下。
 /samples/
-/test.mp3
-/test.flac
-/test.aac
-/test.ogg

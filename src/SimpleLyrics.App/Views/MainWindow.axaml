@@ -16,7 +16,7 @@
             Background="#FF14171D"
             BorderBrush="#FF242A35" BorderThickness="0,0,0,1"
             Padding="14,10">
-      <Grid ColumnDefinitions="Auto,Auto,Auto,*,Auto,Auto,Auto">
+      <Grid ColumnDefinitions="Auto,Auto,Auto,Auto,*,Auto,Auto,Auto,Auto">
 
         <Button Grid.Column="0"
                 Content="打开音频…"
@@ -43,14 +43,35 @@
                 CornerRadius="6"
                 ToolTip.Tip="缩放回整曲铺满，并把曲首对齐到播放指示器" />
 
-        <TextBlock Grid.Column="3"
+        <Button Grid.Column="3"
+                Content="导入歌词…"
+                Click="OnImportLyricsClick"
+                IsEnabled="{Binding HasAudio}"
+                Margin="8,0,0,0"
+                Padding="16,7"
+                CornerRadius="6"
+                ToolTip.Tip="导入一份已经打好时间轴的 .lrc 歌词（Ctrl+I）。需要先打开音频——歌词是音频的侧车文件" />
+
+        <TextBlock Grid.Column="4"
                    Margin="16,0"
                    VerticalAlignment="Center"
                    Text="{Binding FileName}"
                    Foreground="#FFE8ECF4"
                    TextTrimming="CharacterEllipsis" />
 
-        <ProgressBar Grid.Column="4"
+        <!--
+          歌词的载入情况放在工具栏，而不是画在歌词栏的顶端。
+          固定不动的覆盖物与「随滚动经过那里的标签」必然打架：要么盖住标签，
+          要么逼标签让位，而让位就是一个随滚动发生的显隐变化。
+        -->
+        <TextBlock Grid.Column="5"
+                   Margin="0,0,16,0"
+                   VerticalAlignment="Center"
+                   Text="{Binding LyricsCaption}"
+                   Foreground="#FFF9A8D4"
+                   IsVisible="{Binding HasLyrics}" />
+
+        <ProgressBar Grid.Column="6"
                      Width="130" Height="4"
                      Margin="0,0,16,0"
                      VerticalAlignment="Center"
@@ -58,14 +79,14 @@
                      Value="{Binding Progress}"
                      IsVisible="{Binding IsBusy}" />
 
-        <TextBlock Grid.Column="5"
+        <TextBlock Grid.Column="7"
                    Margin="0,0,16,0"
                    VerticalAlignment="Center"
                    Text="准备中…"
                    Foreground="#FFFBBF24"
                    IsVisible="{Binding IsPreparing}" />
 
-        <TextBlock Grid.Column="6"
+        <TextBlock Grid.Column="8"
                    VerticalAlignment="Center"
                    Text="{Binding PositionText}"
                    Foreground="#FF9AA5B8"
@@ -83,11 +104,19 @@
                  TextTrimming="CharacterEllipsis" />
     </Border>
 
-    <!-- ======================== 左 / 中 / 右三栏 ========================= -->
-    <Grid ColumnDefinitions="330,*,300">
+    <!--
+      ============================ 左 / 中 / 右栏 ============================
+
+      中栏分成两列（已绑定 / 未绑定），所以这里是四列而不是三列。
+      歌词标识层要横跨第 0、1 两列，因此它必须是同一个 Grid 的子元素
+      （详见 LyricTrackView 的说明），不能塞进任何一列的 Border 里。
+      第 0 列的宽度只在下面这一处写死；标识层的 TextInset 由代码后置从实际布局量出。
+    -->
+    <Grid ColumnDefinitions="330,*,*,300">
 
       <!-- 左栏：竖直波形。窄而高，正好容纳「时间从上到下」的布局。 -->
       <Border Grid.Column="0"
+              Name="WaveformColumn"
               Background="#FF0E1014"
               BorderBrush="#FF242A35" BorderThickness="0,0,1,0">
         <controls:WaveformView Name="Waveform"
@@ -102,55 +131,49 @@
       </Border>
 
       <!--
-        中栏：歌词。分左右两栏，左栏是已经盖了时间戳的行，右栏是还没打轴的行。
-        打轴的过程就是把行从右边搬到左边，所以这个布局本身就是工作流的写照。
+        中栏左半：已绑定歌词。整块都是歌词标识层的画布，没有自己的标题栏——
+        标题栏会占掉顶部一段，而标识层必须与波形栏占用完全相同的矩形，
+        否则两栏里的线在同一时刻会差出那几个像素、看上去是断的。
+        载入情况改由工具栏显示（见下方 Grid.Column="5"）。
+
+        这一栏同时是「选中 / 拖动标识线」的输入面：标识层自己不参与命中测试
+        （它盖在波形之上，参与了就会把波形的拖动、缩放、滚动整片挡掉），
+        于是指针事件落在这条 Border 上，由代码后置换算坐标后转交给标识层。
+        滚轮同理，只是那条路已经走了很多轮。
       -->
-      <Grid Grid.Column="1" ColumnDefinitions="*,*">
+      <Border Grid.Column="1"
+              Name="LyricColumn"
+              PointerWheelChanged="OnLyricColumnWheel"
+              PointerPressed="OnLyricColumnPressed"
+              PointerMoved="OnLyricColumnMoved"
+              PointerReleased="OnLyricColumnReleased"
+              PointerCaptureLost="OnLyricColumnCaptureLost"
+              Background="#FF0B0D11"
+              BorderBrush="#FF242A35" BorderThickness="0,0,1,0" />
 
-        <Border Grid.Column="0"
-                Background="#FF0B0D11"
-                BorderBrush="#FF242A35" BorderThickness="0,0,1,0">
-          <DockPanel LastChildFill="True">
-            <StackPanel DockPanel.Dock="Top" Margin="22,20,22,12" Spacing="4">
-              <TextBlock Text="已绑定"
-                         FontSize="14" FontWeight="SemiBold"
-                         Foreground="#FFE8ECF4" />
-              <TextBlock Text="带时间戳的歌词行"
-                         FontSize="11"
-                         Foreground="#FF6E7889" />
-            </StackPanel>
+      <!-- 中栏右半：未绑定。P1c 的打轴环节再实现，接口已备在 LyricDocument.UntimedLines。 -->
+      <Border Grid.Column="2" Background="#FF0B0D11"
+              BorderBrush="#FF242A35" BorderThickness="0,0,1,0">
+        <DockPanel LastChildFill="True">
+          <StackPanel DockPanel.Dock="Top" Margin="22,20,22,12" Spacing="4">
+            <TextBlock Text="未绑定"
+                       FontSize="14" FontWeight="SemiBold"
+                       Foreground="#FFE8ECF4" />
+            <TextBlock Text="等待打轴的歌词行"
+                       FontSize="11"
+                       Foreground="#FF6E7889" />
+          </StackPanel>
 
-            <TextBlock Margin="22,0,22,20"
-                       TextWrapping="Wrap" LineHeight="21"
-                       VerticalAlignment="Top"
-                       Foreground="#FF8B95A8"
-                       Text="此栏尚未实现。将按时间顺序列出已经盖好时间戳的歌词行，当前播放到的那一行会高亮；点击某一行可把播放头跳到它的时间点。" />
-          </DockPanel>
-        </Border>
-
-        <Border Grid.Column="1" Background="#FF0B0D11">
-          <DockPanel LastChildFill="True">
-            <StackPanel DockPanel.Dock="Top" Margin="22,20,22,12" Spacing="4">
-              <TextBlock Text="未绑定"
-                         FontSize="14" FontWeight="SemiBold"
-                         Foreground="#FFE8ECF4" />
-              <TextBlock Text="等待打轴的歌词行"
-                         FontSize="11"
-                         Foreground="#FF6E7889" />
-            </StackPanel>
-
-            <TextBlock Margin="22,0,22,20"
-                       TextWrapping="Wrap" LineHeight="21"
-                       VerticalAlignment="Top"
-                       Foreground="#FF8B95A8"
-                       Text="此栏尚未实现。粘贴进来的歌词文本先落在这里，按空格键把当前播放位置盖给光标所在行之后，该行就移到左栏。" />
-          </DockPanel>
-        </Border>
-
-      </Grid>
+          <TextBlock Margin="22,0,22,20"
+                     TextWrapping="Wrap" LineHeight="21"
+                     VerticalAlignment="Top"
+                     Foreground="#FF8B95A8"
+                     Text="此栏尚未实现。粘贴进来的歌词文本先落在这里，按空格键把当前播放位置盖给光标所在行之后，该行就移到左栏。" />
+        </DockPanel>
+      </Border>
 
       <!-- 右栏：文件信息 -->
-      <Border Grid.Column="2"
+      <Border Grid.Column="3"
               Background="#FF14171D"
               BorderBrush="#FF242A35" BorderThickness="1,0,0,0">
         <DockPanel LastChildFill="True">
@@ -182,6 +205,23 @@
 
         </DockPanel>
       </Border>
+
+      <!--
+        歌词标识层：横跨左栏（波形）与中栏左半（已绑定歌词）。
+        时间轴参数与波形控件取同一份绑定，两栏的线因此在同一时刻严格对齐。
+        它是 Grid 的最后一个子元素，因此画在上面；IsHitTestVisible 在控件内部已置 false，
+        波形的拖动、缩放、滚动不受影响。
+        文字起点 TextInset 不在 XAML 里写，由代码后置从波形栏的实际宽度量出——
+        写两处迟早改漏一处，而改漏的表现是歌词标签压在波形上，安静地难看。
+      -->
+      <controls:LyricTrackView Grid.Column="0"
+                               Grid.ColumnSpan="2"
+                               Name="LyricMarks"
+                               Lyrics="{Binding TimedLyrics}"
+                               ScrollSeconds="{Binding ScrollSeconds}"
+                               PixelsPerSecond="{Binding PixelsPerSecond}"
+                               MinimumSeparation="{Binding MinimumLyricSeparation}"
+                               EmptyHint="{Binding LyricsHint}" />
 
     </Grid>
   </DockPanel>

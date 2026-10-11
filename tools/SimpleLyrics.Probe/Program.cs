@@ -49,6 +49,10 @@ internal static class Program
         // 播放链路：分块存储、增量解码、缓冲裁剪与反向重定位，同样不需要音频设备。
         PlaybackProbe.Run(root);
 
+        // 歌词解析：纯文本逻辑，与音频设备、解码器、甚至与素材文件都无关。
+        LyricsProbe.Run();
+        LyricEditProbe.Run();
+
         var decodable = DiagnoseDecoding(root);
         MeasureExactDuration(root, decodable);
         MeasureSeekAccuracy(root, decodable);

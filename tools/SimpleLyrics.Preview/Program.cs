@@ -2,11 +2,14 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using Avalonia.Themes.Fluent;
 using SimpleLyrics.Controls;
+using SimpleLyrics.Core.Editing;
+using SimpleLyrics.Core.Lyrics;
 using SimpleLyrics.Core.Peaks;
 
 namespace SimpleLyrics.Preview;
@@ -28,6 +31,16 @@ internal static class Program
     /// <summary>与主窗口左栏一致的尺寸。</summary>
     private const int Width = 330;
     private const int Height = 736;
+
+    /// <summary>主窗口的波形栏宽度，与 <c>MainWindow.axaml</c> 里的 WaveformColumnWidth 资源一致。</summary>
+    private const int WaveformColumnWidth = 330;
+
+    /// <summary>主窗口 1280 宽减去左右两栏之后，中栏的一半。</summary>
+    private const int LyricColumnWidth = 325;
+
+    /// <summary>本轮检查里断言了多少条、失败了多少条。</summary>
+    private static int _checks;
+    private static int _failed;
 
     [STAThread]
     private static int Main(string[] args)
@@ -90,6 +103,53 @@ internal static class Program
         // ⑥ 播放中正在拖动定位：内容已跟手挪开，指示条实时显示落点，顶部有说明行。
         RenderDragInProgress(outputDirectory, "6-拖动定位中", pyramid, size);
 
+        // ⑦⑧⑨ 歌词标识层横跨「波形栏 + 已绑定歌词栏」，同一份歌词看三档缩放：
+        //       整曲时密集处合成色块，放大后自行散开成一行行标签。
+        var lyrics = BuildDemoLyrics();
+
+        RenderLyricScene(outputDirectory, "7-歌词标识-整曲", pyramid, size,
+            pixelsPerSecond: size.Height / duration, scrollSeconds: -0.4 * duration, lyrics: lyrics);
+
+        RenderLyricScene(outputDirectory, "8-歌词标识-每屏40秒-含色块", pyramid, size,
+            pixelsPerSecond: size.Height / 40.0, scrollSeconds: 98, lyrics: lyrics);
+
+        RenderLyricScene(outputDirectory, "9-歌词标识-最大放大-逐行展开", pyramid, size,
+            pixelsPerSecond: MaximumZoom(pyramid, size), scrollSeconds: 120, lyrics: lyrics);
+
+        // ⑩ 框选：矩形选区框横跨歌词栏，落在其中的标识线整条高亮。
+        RenderLyricScene(outputDirectory, "10-歌词选中-框选", pyramid, size,
+            pixelsPerSecond: size.Height / 40.0, scrollSeconds: 100, lyrics: lyrics,
+            pose: track =>
+            {
+                var x = WaveformColumnWidth + 60;
+                track.BeginGesture(new Point(x, 20), KeyModifiers.None);
+                track.ContinueGesture(new Point(x, 360));
+            });
+
+        // ⑪ 拖动中：整条标识线连同它的标签跟着指针走，而**别的什么都没动**——
+        //    拖动期间刻意不重算合并与省略，所以它压住了下面的标签也照画不误，
+        //    这一帧里能直接看到「松手之后才会重新排版」这件事。
+        RenderLyricScene(outputDirectory, "11-歌词选中-拖动中", pyramid, size,
+            pixelsPerSecond: size.Height / 40.0, scrollSeconds: 100, lyrics: lyrics,
+            pose: track =>
+            {
+                var x = WaveformColumnWidth + 60;
+
+                // 长句那条在 y≈184，往下拖 140 像素之后它的标签正好压住 118.5 秒那条。
+                track.BeginGesture(new Point(x, 184), KeyModifiers.None);
+                track.ContinueGesture(new Point(x, 324));
+            });
+
+        // ⑫ 松手之后：新位置与 118.5 秒那条并成了一块，但仍然看得出哪一条是刚拖过来的——
+        //    选中的那一条在色块里被铺成一条灰带，块上的字也报出「已选 1」。
+        //    这一帧在上一轮是不能看的：当时的画法按选区把色块拆散了，看着像「合并算错了」。
+        //
+        // 给这一幕单发一份<b>拷贝</b>：拖动落定会就地改行对象，而这份示范歌词还要给后面的
+        // 测量用——共用一份的话，量到的是被这一幕改过的数据（踩过一次，表现为后面整段跳过）。
+        RenderLyricScene(outputDirectory, "12-合并之后-选中部分仍可辨认", pyramid, size,
+            pixelsPerSecond: size.Height / 40.0, scrollSeconds: 100, lyrics: Clone(lyrics),
+            pose: track => DropSelection(track, 184, 324));
+
         MeasureRenderCost(pyramid, size);
 
         // 包络本身是稳的：这个测量是为了在怀疑「采样粒度导致闪烁」时能一眼排除它。
@@ -109,7 +169,100 @@ internal static class Program
         // 拖动定位在播放中与未播放时的分野。
         MeasureWaveformDrag(pyramid, size);
 
+        // 滚轮：波形栏与已绑定歌词栏共用同一条路径。
+        MeasureWheel(pyramid, size);
+
+        // 歌词标识线的合并规律，以及「分组不丢行、不重行」。
+        MeasureLyricMarks(pyramid, size, lyrics);
+
+        // 两条标识线不合并的最小间隔，以及 LRC 时间码带来的取整。
+        MeasureMinimumSeparation(pyramid, size);
+
+        // 歌词栏里的选中与拖动：命中、位移换算、以及「拖动途中不动文档」这条前提。
+        MeasureLyricEditing(pyramid, size, lyrics);
+
+        // 拖动落定后与邻居合并时的画法：形状只由时间码决定，选区只换颜色。
+        MeasureMergedSelection(size);
+
         return 0;
+    }
+
+    /// <summary>
+    /// 检查滚轮的那条路径。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 滚轮的处理本来是 <c>OnPointerWheelChanged</c> 里的一段，为了让「已绑定歌词栏」也能用，
+    /// 被抽成了 <see cref="WaveformView.ApplyWheel"/> 并交由那一栏转发。抽取本身有风险——
+    /// 抽错了不会有任何编译错误——所以这里直接把三条语义钉住：向上滚看到更早的时间、
+    /// Ctrl+滚轮仍然以指示条为锚、没有音频时如实返回「没处理」。
+    /// </para>
+    /// <para>
+    /// 最后一条不是凑数：那一栏拿到 <c>false</c> 才会把事件继续冒泡出去。
+    /// 若它一律返回 <c>true</c>，一个空窗口里的滚轮就会被无声吞掉。
+    /// </para>
+    /// </remarks>
+    private static void MeasureWheel(PeakPyramid pyramid, Size size)
+    {
+        var view = new WaveformView { Width = size.Width, Height = size.Height, Peaks = pyramid };
+        Layout(view, size);
+        using (RasterizeToBitmap(view, size, 1.0)) { }
+
+        view.PixelsPerSecond = size.Height / 60.0;
+        view.IndicatorRatio = 0.4;
+        view.ScrollSeconds = 100;
+
+        Console.WriteLine("---- 滚轮 ----");
+
+        var before = view.ScrollSeconds;
+        var handledUp = view.ApplyWheel(1, zoom: false);
+
+        Console.WriteLine(
+            $"  向上滚一格：顶端 {before,8:F2}s → {view.ScrollSeconds,8:F2}s"
+            + $"（看到更早的时间：{(view.ScrollSeconds < before ? "是" : "否")}，已处理 {handledUp}）");
+
+        before = view.ScrollSeconds;
+        var handledDown = view.ApplyWheel(-1, zoom: false);
+
+        Console.WriteLine(
+            $"  向下滚一格：顶端 {before,8:F2}s → {view.ScrollSeconds,8:F2}s"
+            + $"（看到更晚的时间：{(view.ScrollSeconds > before ? "是" : "否")}，已处理 {handledDown}）");
+
+        var anchor = view.PlayStartSeconds;
+        var zoomBefore = view.PixelsPerSecond;
+        view.ApplyWheel(1, zoom: true);
+        var drift = Math.Abs(view.PlayStartSeconds - anchor) * 1000;
+
+        Console.WriteLine(
+            $"  Ctrl+滚轮  ：每秒像素 {zoomBefore,7:F2} → {view.PixelsPerSecond,7:F2}"
+            + $"   指示条所指 {anchor,7:F3}s → {view.PlayStartSeconds,7:F3}s   偏差 {drift:F2} ms");
+
+        var empty = new WaveformView();
+        Console.WriteLine($"  没有音频时：{(empty.ApplyWheel(1, zoom: false) ? "错误地报告已处理" : "如实报告未处理")}");
+
+        // 拖动标识线期间缩放被锁住。锁的必须是缩放而不是滚动：手势还在进行中，
+        // 让 Ctrl+滚轮降级成普通滚动，比变成一片什么都不做的死区好。
+        _checks = 0;
+        _failed = 0;
+
+        view.ZoomLocked = true;
+
+        var lockedZoom = view.PixelsPerSecond;
+        var lockedScroll = view.ScrollSeconds;
+        var handled = view.ApplyWheel(1, zoom: true);
+
+        Console.WriteLine(
+            $"  缩放锁住时：Ctrl+滚轮 每秒像素 {lockedZoom,7:F2} → {view.PixelsPerSecond,7:F2}"
+            + $"（须不变）  顶端 {lockedScroll,8:F2}s → {view.ScrollSeconds,8:F2}s（降级成滚动）  已处理 {handled}");
+
+        Check("锁住缩放时 Ctrl+滚轮不改变缩放", view.PixelsPerSecond == lockedZoom);
+        Check("锁住缩放时 Ctrl+滚轮仍然滚动", view.ScrollSeconds != lockedScroll);
+        Check("锁住缩放时这一格仍算已处理", handled);
+
+        view.ZoomLocked = false;
+        Report();
+
+        Console.WriteLine();
     }
 
     /// <summary>
@@ -417,10 +570,974 @@ internal static class Program
         view.EndWaveformDrag();
     }
 
+    /// <summary>
+    /// 渲染「波形栏 + 已绑定歌词栏」，歌词标识层横跨两栏。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 刻意把两个控件放进真的 <see cref="Grid"/> 里，而不是分别渲染再拼图：
+    /// 这条跨栏的线是否与波形的时间轴对齐，正是要靠这张图回答的问题，
+    /// 拼图会把唯一值得看的东西（接缝处的连续性）藏起来。
+    /// </para>
+    /// <para>
+    /// <paramref name="pose"/> 用来把控件摆成某个「进行中」的状态（正在框选、正在拖动）。
+    /// 那些状态在真实操作里只存在几百毫秒，却是本轮功能的主体，所以直接把它们画出来。
+    /// </para>
+    /// </remarks>
+    private static void RenderLyricScene(
+        string outputDirectory,
+        string label,
+        PeakPyramid pyramid,
+        Size size,
+        double pixelsPerSecond,
+        double scrollSeconds,
+        IReadOnlyList<LyricLine> lyrics,
+        Action<LyricTrackView>? pose = null)
+    {
+        var sceneSize = new Size(WaveformColumnWidth + LyricColumnWidth, size.Height);
+        var grid = BuildLyricScene(pyramid, sceneSize, lyrics, out var waveform, out var track);
+
+        Layout(grid, sceneSize);
+
+        // 首次光栅化把波形控件「载入后自动适配整曲」那一步走完，
+        // 之后设置的缩放与滚动才不会被它覆盖。
+        using (Rasterize(grid, sceneSize)) { }
+
+        waveform.PixelsPerSecond = pixelsPerSecond;
+        waveform.ScrollSeconds = scrollSeconds;
+
+        // 标识层与波形共用同一份时间轴参数——这正是产品里那条数据绑定的路径。
+        track.PixelsPerSecond = waveform.PixelsPerSecond;
+        track.ScrollSeconds = waveform.ScrollSeconds;
+
+        pose?.Invoke(track);
+
+        waveform.InvalidateVisual();
+        track.InvalidateVisual();
+
+        var name = $"{label}.png";
+
+        using (var bitmap = RasterizeToBitmap(grid, sceneSize, 1.0)) bitmap.Save(Path.Combine(outputDirectory, name));
+
+        var clusters = new List<LyricMarkCluster>();
+        LyricTrackView.GroupInto(clusters, lyrics, track.ScrollSeconds, track.PixelsPerSecond, LyricTrackView.LabelMinGap);
+
+        int singles = 0, blocks = 0;
+        foreach (var cluster in clusters)
+        {
+            if (cluster.BottomY < 0 || cluster.TopY > sceneSize.Height) continue;
+            if (cluster.Count == 1) singles++;
+            else blocks++;
+        }
+
+        var extra = pose is null ? string.Empty : $"   选中 {track.SelectionCount} 行";
+
+        Console.WriteLine(
+            $"已输出 {name,-34} 每秒像素 {track.PixelsPerSecond,7:F1}   "
+            + $"顶端 {track.ScrollSeconds,8:F2}s   可见：单行 {singles} / 色块 {blocks}{extra}");
+    }
+
+    private static Grid BuildLyricScene(
+        PeakPyramid pyramid,
+        Size size,
+        IReadOnlyList<LyricLine> lyrics,
+        out WaveformView waveform,
+        out LyricTrackView track)
+    {
+        waveform = new WaveformView { Peaks = pyramid };
+
+        track = new LyricTrackView
+        {
+            Lyrics = lyrics,
+            TextInset = WaveformColumnWidth,
+        };
+
+        var grid = new Grid
+        {
+            Width = size.Width,
+            Height = size.Height,
+            ColumnDefinitions = new ColumnDefinitions($"{WaveformColumnWidth},*"),
+            Background = new SolidColorBrush(Color.FromRgb(0x0B, 0x0D, 0x11)),
+        };
+
+        var waveHost = new Border
+        {
+            Background = new SolidColorBrush(Color.FromRgb(0x0E, 0x10, 0x14)),
+            Child = waveform,
+        };
+
+        Grid.SetColumn(waveHost, 0);
+        grid.Children.Add(waveHost);
+
+        var lyricHost = new Border { Background = new SolidColorBrush(Color.FromRgb(0x0B, 0x0D, 0x11)) };
+        Grid.SetColumn(lyricHost, 1);
+        grid.Children.Add(lyricHost);
+
+        // 标识层横跨两列，而且必须是最后一个子元素——Grid 按添加顺序绘制，最后添加的在最上面。
+        Grid.SetColumn(track, 0);
+        Grid.SetColumnSpan(track, 2);
+        grid.Children.Add(track);
+
+        return grid;
+    }
+
+    /// <summary>
+    /// 造一份示范歌词：正文每 8.5 秒一句，另插两段刻意拥挤的副歌。
+    /// </summary>
+    /// <remarks>
+    /// 拥挤段落是为了在同一张图里同时看到两种形态——单行带标签、密集处合成色块；
+    /// 把同一份歌词换一档缩放再渲染，就能看到色块随放大自行散开成一行行标签。
+    /// </remarks>
+    private static IReadOnlyList<LyricLine> BuildDemoLyrics()
+    {
+        string[] verses =
+        [
+            "夜色漫过窗台",
+            "风把云吹成一片海",
+            "我数着路灯一盏盏",
+            "数到天边泛白",
+            "旧唱片转了半圈",
+            "唱针停在某个夏天",
+            "那时的蝉声很慢",
+            "慢得够写完一封信",
+            "后来城市改了名字",
+            "街角那家店也搬走",
+            "只有歌还在原地",
+            "等着谁把它拾起",
+            "如果时间是一条河我愿在渡口多停一会看看倒影里的自己还是当年那个模样",
+            "我愿在渡口多停一会",
+            "看倒影里的自己",
+            "还是当年那个模样",
+            "副歌响起的时候",
+            "所有的灯都亮了",
+            "所有的门都开了",
+            "所有的路都通向",
+            "那个回不去的傍晚",
+            "掌声落下去又起",
+            "像潮水不肯退去",
+        ];
+
+        var lines = new List<LyricLine>();
+
+        for (var index = 0; index < verses.Length; index++)
+        {
+            lines.Add(new LyricLine
+            {
+                Text = verses[index],
+                Start = TimeSpan.FromSeconds(8 + index * 8.5),
+            });
+        }
+
+        // 密集段一：12 句挤在 1 秒之内。每屏 40 秒时相邻只差 3.7 像素，必然合并；
+        // 放到最大放大时相邻拉开一百多像素，就该逐行展开。
+        for (var index = 0; index < 12; index++)
+        {
+            lines.Add(new LyricLine
+            {
+                Text = $"和声 {index + 1}",
+                Start = TimeSpan.FromSeconds(120 + index * 0.09),
+            });
+        }
+
+        // 密集段二：间距稍大，用来看「刚好放得下标签」与「放不下」的交界。
+        for (var index = 0; index < 5; index++)
+        {
+            lines.Add(new LyricLine
+            {
+                Text = $"叠句 {index + 1}",
+                Start = TimeSpan.FromSeconds(180 + index * 0.35),
+            });
+        }
+
+        // 标识层要求按时间升序，这里显式排一次——产品里由 LyricDocument.TimedLines 保证。
+        lines.Sort(static (left, right) => Nullable.Compare(left.Start, right.Start));
+        return lines;
+    }
+
+    /// <summary>
+    /// 检查歌词标识线的合并规律与标签排版。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 判据有四条。其一是<b>分组完整性</b>：每一行都必须落在某一个簇里，既不丢也不重——
+    /// 丢一行是「歌词没画出来」，重一行是「凭空多一条线」，两者都不会崩，只会悄悄错。
+    /// </para>
+    /// <para>
+    /// 其二是<b>合并随缩放散开</b>：同一份歌词放大之后，被卷进色块的行数必须下降。
+    /// 这正是「判据取像素而不是秒」要保证的事；若有人改回按时间判，这一列立刻就不动了。
+    /// </para>
+    /// <para>
+    /// 其三是<b>完整渲染的条数随缩放上升</b>：放大之后间距变宽、可排的行数变多，
+    /// 被省略号的条数应当降到零。这是本轮改动的核心，所以直接数出来。
+    /// </para>
+    /// <para>
+    /// 其四是<b>门槛仍然够用</b>：<see cref="LyricTrackView.LabelMinGap"/> 是手写常数，
+    /// 而一行标签实际需要的高度随字号变化。门槛一旦小于实际所需，两条单行标签就会互相压住，
+    /// 而那是一种「不崩、只是慢慢变难读」的缺陷，肉眼很难发现。
+    /// </para>
+    /// <para>
+    /// 分组与排版都用控件自己的 <see cref="LyricTrackView.GroupInto"/> 与
+    /// <see cref="LyricTrackView.PlanLabel"/>，不是这里另写一遍——
+    /// 另写一遍的话，测的就不是屏幕上真正发生的事了。
+    /// </para>
+    /// </remarks>
+    private static void MeasureLyricMarks(PeakPyramid pyramid, Size size, IReadOnlyList<LyricLine> lyrics)
+    {
+        var duration = pyramid.DurationSeconds;
+        if (duration <= 0 || lyrics.Count == 0) return;
+
+        var sceneWidth = WaveformColumnWidth + LyricColumnWidth;
+        var available = LyricTrackView.TextAreaWidth(sceneWidth, WaveformColumnWidth);
+        var required = LyricTrackView.RequiredRowGap();
+
+        Console.WriteLine("---- 歌词标签的排版 ----");
+        Console.WriteLine("  时间戳打头、正文接在后面，排不下就往下一行折；行数由「到下一条标识线的距离」决定。");
+        Console.WriteLine(
+            $"  单行标签需要 {required:F1} 像素，合并门槛 {LyricTrackView.LabelMinGap:F0} 像素 —— "
+            + $"{(LyricTrackView.LabelMinGap >= required ? "通过" : "失败：两条单行标签会互相压住")}");
+        Console.WriteLine($"  正文字段宽 {available:F1} 像素");
+
+        (string Label, double PixelsPerSecond, double Scroll)[] cases =
+        [
+            ("整曲适配（每屏一曲）", size.Height / duration, -0.4 * duration),
+            ("每屏 160 秒", size.Height / 160.0, 55),
+            ("每屏 60 秒", size.Height / 60.0, 60),
+            ("每屏 40 秒", size.Height / 40.0, 98),
+            ("每屏 18 秒", size.Height / 18.0, 112),
+            ("最大放大（已钳制）", MaximumZoom(pyramid, size), 120),
+        ];
+
+        Console.WriteLine();
+        Console.WriteLine("  场景                    可见行   色块   单条   完整   省略   行数范围");
+
+        var clusters = new List<LyricMarkCluster>();
+        var grouped = 0;
+
+        foreach (var (label, pixelsPerSecond, scroll) in cases)
+        {
+            LyricTrackView.GroupInto(clusters, lyrics, scroll, pixelsPerSecond, LyricTrackView.LabelMinGap);
+
+            int visible = 0, blocks = 0, singles = 0, complete = 0, truncated = 0;
+            var minimumRows = int.MaxValue;
+            var maximumRows = 0;
+
+            for (var index = 0; index < clusters.Count; index++)
+            {
+                var cluster = clusters[index];
+
+                // 完整性要连屏幕外的簇一起数：分组是全局的，不能只在可见部分成立。
+                grouped += cluster.Count;
+
+                if (cluster.BottomY < 0 || cluster.TopY > size.Height) continue;
+
+                visible += cluster.Count;
+
+                if (cluster.Count > 1)
+                {
+                    blocks++;
+                    continue;
+                }
+
+                singles++;
+
+                // 行数与「完整 / 省略」都由控件自己的判据给出。
+                var room = index + 1 < clusters.Count
+                    ? clusters[index + 1].TopY - cluster.TopY - 3
+                    : double.PositiveInfinity;
+
+                var plan = LyricTrackView.PlanLabel(lyrics[cluster.Start], available, room);
+
+                if (plan.Truncated) truncated++;
+                else complete++;
+
+                if (plan.Rows < minimumRows) minimumRows = plan.Rows;
+                if (plan.Rows > maximumRows) maximumRows = plan.Rows;
+            }
+
+            var range = singles == 0 ? "—" : $"{minimumRows} – {maximumRows} 行";
+
+            Console.WriteLine(
+                $"  {label,-24} {visible,6} {blocks,6} {singles,6} {complete,6} {truncated,6}   {range}");
+        }
+
+        var expected = lyrics.Count * cases.Length;
+
+        Console.WriteLine();
+        Console.WriteLine(
+            $"  分组完整性：{lyrics.Count} 行 × {cases.Length} 档，应计入 {expected}，实际计入 {grouped}"
+            + $" —— {(grouped == expected ? "通过（无丢失、无重复）" : "失败")}");
+
+        // 分组与行数与滚动位置无关。这一条是**拖动期间不重算合并与省略**的地基：
+        // 时间轴数据在松手前没被改动，于是这一帧算出来的簇与行数和按下之前逐字相同。
+        // 若哪天有人把判据改成看绝对纵坐标（「快到底了就少画两行」），这一列立刻就会动。
+        var shape = LyricShape(lyrics, size, size.Height / 60.0, 60);
+        var drift = 0;
+
+        for (var offset = 1; offset <= 8; offset++)
+        {
+            if (LyricShape(lyrics, size, size.Height / 60.0, 60 + offset * 3.7) == shape) continue;
+            drift++;
+        }
+
+        Console.WriteLine(
+            $"  分簇与行数随滚动的不变：同一档缩放下挪 8 次滚动位置，形状变了 {drift} 次"
+            + $" —— {(drift == 0 ? "通过" : "失败：拖动时会重算版式")}");
+        Console.WriteLine($"  （形状指纹 {shape[..Math.Min(48, shape.Length)]}…）");
+
+        Console.WriteLine();
+    }
+
+    /// <summary>
+    /// 「某一档缩放、某个滚动位置下，屏幕上的分簇与行数」的指纹。
+    /// </summary>
+    /// <remarks>
+    /// 只取「哪几行在同一簇里 + 每簇的标签占几行」，不含纵坐标——要测的正是它与滚动无关。
+    /// </remarks>
+    private static string LyricShape(IReadOnlyList<LyricLine> lyrics, Size size, double pixelsPerSecond, double scroll)
+    {
+        var available = LyricTrackView.TextAreaWidth(WaveformColumnWidth + LyricColumnWidth, WaveformColumnWidth);
+
+        var clusters = new List<LyricMarkCluster>();
+        LyricTrackView.GroupInto(clusters, lyrics, scroll, pixelsPerSecond, LyricTrackView.LabelMinGap);
+
+        var builder = new System.Text.StringBuilder();
+
+        for (var index = 0; index < clusters.Count; index++)
+        {
+            var cluster = clusters[index];
+            var room = index + 1 < clusters.Count
+                ? clusters[index + 1].TopY - cluster.TopY - 3
+                : double.PositiveInfinity;
+
+            var rows = cluster.Count == 1
+                ? LyricTrackView.PlanLabel(lyrics[cluster.Start], available, room).Rows
+                : 0;
+
+            builder.Append(cluster.Start).Append('/').Append(cluster.Count).Append(':').Append(rows).Append(' ');
+        }
+
+        return builder.ToString();
+    }
+
+    /// <summary>
+    /// 检查「两条标识线在最大放大倍率下不合并」这条最小间隔。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 判据不另写一套，而是拿两条按该间隔摆好的歌词去问控件自己的分簇算法：正好间隔时必须是
+    /// 两条独立的线，少一格就必须粘成一个色块。后半句同样重要——若少一格也分得开，
+    /// 说明这个间隔定得偏大，白白浪费了时间轴的精度。
+    /// </para>
+    /// <para>
+    /// 这里同时钉住「LRC 只存得到 10 毫秒」这件事：理论上限 15.96 毫秒不是可写出的时间码，
+    /// 所以实际执行的是向上取整后的整格数（20 毫秒）。
+    /// </para>
+    /// </remarks>
+    private static void MeasureMinimumSeparation(PeakPyramid pyramid, Size size)
+    {
+        _checks = 0;
+        _failed = 0;
+
+        var maximum = MaximumZoom(pyramid, size);
+        var minimum = LyricTrackView.MinimumSeparationFor(maximum);
+        var units = LyricTimeline.MinimumUnits(minimum);
+        var enforced = LrcTimecode.FromUnits(units);
+
+        Console.WriteLine("---- 两条标识线不合并的最小间隔 ----");
+        Console.WriteLine(
+            $"  最大放大倍率 {maximum,8:F2} 像素/秒   合并门槛 {LyricTrackView.LabelMinGap:F0} 像素");
+        Console.WriteLine(
+            $"  理论最小间隔 {minimum.TotalMilliseconds,8:F3} 毫秒   "
+            + $"按 {LrcTimecode.Resolution.TotalMilliseconds:F0} 毫秒时间码向上取整 → "
+            + $"实际执行 {enforced.TotalMilliseconds:F0} 毫秒（{units} 格）");
+        Console.WriteLine();
+
+        double[] cases = [enforced.TotalSeconds, (units - 1) * 0.01];
+        var expectation = new[] { "两条独立标识线", "合成一个色块" };
+
+        for (var index = 0; index < cases.Length; index++)
+        {
+            var seconds = cases[index];
+
+            var lines = new List<LyricLine>
+            {
+                new() { Text = "前一句", Start = TimeSpan.FromSeconds(60) },
+                new() { Text = "后一句", Start = TimeSpan.FromSeconds(60 + seconds) },
+            };
+
+            var clusters = new List<LyricMarkCluster>();
+            LyricTrackView.GroupInto(clusters, lines, 0, maximum, LyricTrackView.LabelMinGap);
+
+            var gap = seconds * maximum;
+            var outcome = clusters.Count == 1 ? "合成一个色块" : "两条独立标识线";
+
+            Console.WriteLine(
+                $"  间隔 {seconds * 1000,5:F0} 毫秒 → 屏幕间距 {gap,7:F2} 像素 → {outcome}"
+                + $"（期望 {expectation[index]}）");
+
+            Check($"间隔 {seconds * 1000:F0} 毫秒时的合并行为", outcome == expectation[index]);
+        }
+
+        Report();
+    }
+
+    /// <summary>
+    /// 检查歌词栏里的选中与拖动。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 这里不用「自己算一遍再比对」的办法，而是真的对控件做一遍操作：
+    /// <see cref="LyricTrackView.BeginGesture"/> / <c>ContinueGesture</c> / <c>EndGesture</c>
+    /// 就是窗口代码后置接到指针事件后调用的那三个方法。于是这一组检查同时守住了三件事——
+    /// 命中判据、拖动位移的换算、以及「拖动期间不改动文档」这条让合并与省略得以不重算的前提。
+    /// </para>
+    /// <para>
+    /// 每个簇的顶端纵坐标来自控件自己的分簇算法，工具不另推一遍。
+    /// </para>
+    /// </remarks>
+    private static void MeasureLyricEditing(PeakPyramid pyramid, Size size, IReadOnlyList<LyricLine> lyrics)
+    {
+        _checks = 0;
+        _failed = 0;
+
+        const double Scroll = 100;
+        const double DragPixels = 120;
+
+        var sceneWidth = WaveformColumnWidth + LyricColumnWidth;
+        var scene = new Size(sceneWidth, size.Height);
+        var pixelsPerSecond = size.Height / 40.0;
+
+        var track = new LyricTrackView
+        {
+            Width = sceneWidth,
+            Height = size.Height,
+            TextInset = WaveformColumnWidth,
+            Lyrics = lyrics,
+            MinimumSeparation = LyricTrackView.MinimumSeparationFor(MaximumZoom(pyramid, size)),
+        };
+
+        Layout(track, scene);
+        track.PixelsPerSecond = pixelsPerSecond;
+        track.ScrollSeconds = Scroll;
+
+        var clusters = new List<LyricMarkCluster>();
+        LyricTrackView.GroupInto(clusters, lyrics, Scroll, pixelsPerSecond, LyricTrackView.LabelMinGap);
+
+        Console.WriteLine("---- 歌词的选中与拖动 ----");
+
+        if (clusters.Count < 3)
+        {
+            Console.WriteLine("  示范歌词太少，跳过。");
+            Console.WriteLine();
+            return;
+        }
+
+        // 挑一条单独的、正文长到要折行的标识线：拖它最能看出「标签跟着走、版式却没重算」。
+        var target = -1;
+        for (var index = 0; index < clusters.Count; index++)
+        {
+            if (clusters[index].Count != 1) continue;
+            if (lyrics[clusters[index].Start].Text.Length < 20) continue;
+
+            target = index;
+            break;
+        }
+
+        if (target < 0 || target + 2 >= clusters.Count)
+        {
+            Console.WriteLine("  示范歌词里没有合适的单行目标，跳过。");
+            Console.WriteLine();
+            return;
+        }
+
+        var x = WaveformColumnWidth + 60;
+        var line = lyrics[clusters[target].Start];
+        var original = line.Start!.Value;
+        var topY = clusters[target].TopY;
+
+        IReadOnlyList<LyricTimeTarget>? reported = null;
+        track.TimesChanged += (_, e) => reported = e.Targets;
+
+        // ① 拖一段距离：报出来的时刻必须是「原时刻 + 位移对应的秒数」，并且量化到时间码。
+        track.BeginGesture(new Point(x, topY), KeyModifiers.None);
+        track.ContinueGesture(new Point(x, topY + DragPixels));
+
+        var duringDrag = line.Start!.Value;
+
+        track.EndGesture();
+
+        var wanted = LrcTimecode.Quantize(original + TimeSpan.FromSeconds(DragPixels / pixelsPerSecond));
+        var landed = reported is { Count: > 0 } ? reported[0].Start : original;
+
+        Console.WriteLine(
+            $"  拖动 {DragPixels:F0} 像素 = {DragPixels / pixelsPerSecond * 1000:F0} 毫秒："
+            + $"{LrcTimecode.Format(original)} → {LrcTimecode.Format(landed)}"
+            + $"（期望 {LrcTimecode.Format(wanted)}）");
+        Console.WriteLine(
+            $"  拖动途中文档里的时间码 {LrcTimecode.Format(duringDrag)}"
+            + $"（{(duringDrag == original ? "未改动" : "被改了")}）");
+
+        Check("拖动途中不动文档", duringDrag == original);
+        Check("落点 = 原时刻位移后量化到时间码", reported is { Count: 1 } && reported[0].Start == wanted);
+        Check("松手只报警不改文档", line.Start == original);
+        Check("拖过的行成为选中项", track.SelectionCount == clusters[target].Count);
+
+        // ② 只点一下：一次点击不该动任何时间码——拖动会真的改数据，不能因为手抖几像素就动它。
+        reported = null;
+        track.BeginGesture(new Point(x, topY), KeyModifiers.None);
+        track.EndGesture();
+
+        Check("只点一下不改时间码", reported is null);
+        Check("点已选中的行不改变选区", track.SelectionCount == clusters[target].Count);
+
+        // ③ Ctrl 加选下一簇、Shift 从锚点选到再下一簇。
+        var second = clusters[target + 1];
+        var third = clusters[target + 2];
+
+        track.BeginGesture(new Point(x, second.TopY), KeyModifiers.Control);
+        track.EndGesture();
+
+        var afterControl = track.SelectionCount;
+        var expectedControl = clusters[target].Count + second.Count;
+
+        Console.WriteLine(
+            $"  Ctrl 点击相邻色块：选中 {afterControl} 行（期望 {expectedControl} 行 = "
+            + $"{clusters[target].Count} + {second.Count}）");
+
+        Check("Ctrl 点击把整簇并进选区", afterControl == expectedControl);
+
+        track.BeginGesture(new Point(x, third.TopY), KeyModifiers.Shift);
+        track.EndGesture();
+
+        var afterShift = track.SelectionCount;
+        var expectedShift = third.End - second.Start;
+
+        Console.WriteLine($"  Shift 点击再下一簇：选中 {afterShift} 行（期望 {expectedShift} 行）");
+
+        Check("Shift 点击选中整段区间", afterShift == expectedShift);
+
+        // ④ 框选：从空白处往下拉一个矩形，落在其中的每一簇都该被选中。
+        var first = clusters[target];
+        var last = clusters[target + 2];
+
+        var from = first.TopY - 10;
+        var to = last.TopY + 10;
+
+        track.BeginGesture(new Point(x, from), KeyModifiers.None);
+        track.ContinueGesture(new Point(x, to));
+        track.EndGesture();
+
+        var covered = first.Count + second.Count + third.Count;
+
+        // 上一簇的标签有可能一直伸到矩形上沿之下——那它就一并被选中，这是有意的
+        // （标签是上一条标识线的一部分，点/框到文字就算选到它）。两种结果都算对。
+        var previous = target > 0 ? clusters[target - 1].Count : 0;
+
+        Console.WriteLine(
+            $"  框选 [{from:F0}, {to:F0}] 像素：选中 {track.SelectionCount} 行"
+            + $"（区间内三簇共 {covered} 行"
+            + (previous > 0 ? $"，上一簇的标签若伸进来还会加上 {previous} 行" : string.Empty)
+            + "）");
+
+        Check(
+            "框选选中区间内的标识线",
+            track.SelectionCount == covered || track.SelectionCount == covered + previous);
+
+        // ⑤ Esc 放弃：拖动过程中文档从未改动，所以「放弃」就是把预览丢掉，一个字都不用还原。
+        reported = null;
+        var before = line.Start;
+
+        track.BeginGesture(new Point(x, topY), KeyModifiers.None);
+        track.ContinueGesture(new Point(x, topY + DragPixels * 2));
+        track.AbortGesture();
+
+        Check("放弃拖动不报出改动", reported is null);
+        Check("放弃拖动后时间码原样", line.Start == before);
+
+        // ⑥ 播放中滚动不改变「谁被拖到哪儿」：指针下的时刻跟着滚动走，被拖的线因此牢牢贴在指针下面。
+        track.BeginGesture(new Point(x, topY), KeyModifiers.None);
+        track.ContinueGesture(new Point(x, topY + 40));
+
+        track.ScrollSeconds += 5;                       // 播放中波形自己往前滚
+        track.ContinueGesture(new Point(x, topY + 40)); // 指针一动不动
+        track.EndGesture();
+
+        var afterScroll = reported is { Count: > 0 } ? reported[0].Start : original;
+        var withScroll = original.TotalSeconds + 40 / pixelsPerSecond + 5;
+
+        Console.WriteLine(
+            $"  拖动途中波形滚动 5 秒：落点 {LrcTimecode.Format(afterScroll)}"
+            + $"（指针没动，线条因此贴在指针下，落点随之 +5 秒）");
+
+        Check("波形滚动把落点一起带走", Math.Abs(afterScroll.TotalSeconds - withScroll) < 0.011);
+
+        // ⑦ 选中样式必须真的落到画面上。
+        // 这一条只能靠数像素：选中色画丢了不会崩、不会报错，而「拉了框却看不出选了谁」
+        // 正是本轮从渲染图里发现的一个真实缺陷（当时「选中」与「正在拖动」被混成了一个判断）。
+        //
+        // 先把视图滚回 ⑥ 之前的位置：⑥ 末尾滚动过 5 秒，那个纵坐标这时已经指到别处了。
+        track.ScrollSeconds = Scroll;
+        track.ClearSelection();
+
+        var empty = CountWhite(RasterizeToBitmap(track, scene, 1.0));
+
+        track.BeginGesture(new Point(x, topY), KeyModifiers.None);
+        track.EndGesture();
+
+        var frame = RasterizeToBitmap(track, scene, 1.0);
+        var one = CountWhite(frame);
+
+        // 选中色一度与播放指示条同为琥珀，实机根本分不清。这条断言把「两者不同色」
+        // 钉死：标识层里任何情况下都不该出现那个琥珀（它只属于播放指示头）。
+        var amber = CountAmber(frame);
+
+        Console.WriteLine(
+            $"  白色（选中）像素：未选中 {empty} 个，选中一条 {one} 个"
+            + $"（控制宽 {sceneWidth} 像素，4 像素粗的线约 {sceneWidth * 3} 个）；"
+            + $"琥珀（播放指示条专用）{amber} 个");
+
+        Check("按下的那一下确实选中了一行", track.SelectionCount == clusters[target].Count);
+        Check("没有选中项时画面上没有选中色", empty == 0);
+        Check("选中之后标识线被画成选中样式", one > sceneWidth * 2);
+        Check("选中色与播放指示条不同色", amber == 0);
+
+        Report();
+    }
+
+    /// <summary>
+    /// 数出「选中色」的像素。
+    /// </summary>
+    /// <remarks>
+    /// 判据取<b>完全等于</b>白色，而不是「够亮就算」：文字的抗锯齿会在笔画边缘留下
+    /// 彩边（次像素平滑），宽松的判据会把它们一起数进来，于是「没选中也有几百个」——
+    /// 这种假阳性会让这条检查彻底失去意义。正文用近白（253,242,248）而不是纯白，
+    /// 正是为了让「纯白」只属于选中。
+    /// </remarks>
+    private static int CountWhite(RenderTargetBitmap bitmap) =>
+        CountPixels(bitmap, static (red, green, blue) => red == 255 && green == 255 && blue == 255);
+
+    /// <summary>数出播放指示条专用的琥珀色（255,194,74）。</summary>
+    private static int CountAmber(RenderTargetBitmap bitmap) =>
+        CountPixels(bitmap, static (red, green, blue) => red == 255 && green == 194 && blue == 74);
+
+    /// <summary>数出满足条件的像素个数。</summary>
+    private static int CountPixels(RenderTargetBitmap bitmap, Func<int, int, int, bool> match)
+    {
+        var width = bitmap.PixelSize.Width;
+        var height = bitmap.PixelSize.Height;
+        var stride = width * 4;
+        var buffer = new byte[stride * height];
+
+        var handle = GCHandle.Alloc(buffer, GCHandleType.Pinned);
+        try
+        {
+            bitmap.CopyPixels(new PixelRect(0, 0, width, height), handle.AddrOfPinnedObject(), buffer.Length, stride);
+        }
+        finally
+        {
+            handle.Free();
+        }
+
+        var count = 0;
+
+        for (var y = 0; y < height; y++)
+        {
+            for (var x = 0; x < width; x++)
+            {
+                var index = y * stride + x * 4;
+                if (match(buffer[index + 2], buffer[index + 1], buffer[index])) count++;
+            }
+        }
+
+        return count;
+    }
+
+    /// <summary>
+    /// 「横贯整个宽度的那些行」的指纹：标识线与色块的所在行，形如 <c>302+7;352+3</c>。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 判据刻意与颜色无关：逐行数不透明像素，占满大部分宽度的那些行就是标识线与色块
+    /// （正文与时间戳都只有几十像素宽，铺不满）。于是这份指纹只描述<b>形状</b>——
+    /// 哪几条横线存在、各占几行、在什么位置。
+    /// </para>
+    /// <para>
+    /// 用它来守住本轮那个真缺陷：一个色块拖到另一个色块附近松手之后，新合并出来的簇里
+    /// 既有选中的又有没选中的，而当时的画法按选区把色块拆开了，看上去像是「合并算错了，
+    /// 非得取消选择才重新合并」。现在把「有选区」与「没选区」两份指纹一比：
+    /// 选区只该换颜色，形状一旦有任何差别，这份指纹立刻就不同了。
+    /// </para>
+    /// </remarks>
+    private static string BandSignature(RenderTargetBitmap bitmap)
+    {
+        var width = bitmap.PixelSize.Width;
+        var height = bitmap.PixelSize.Height;
+        var stride = width * 4;
+        var buffer = new byte[stride * height];
+
+        var handle = GCHandle.Alloc(buffer, GCHandleType.Pinned);
+        try
+        {
+            bitmap.CopyPixels(new PixelRect(0, 0, width, height), handle.AddrOfPinnedObject(), buffer.Length, stride);
+        }
+        finally
+        {
+            handle.Free();
+        }
+
+        var runs = new List<string>();
+        var run = 0;
+
+        for (var y = 0; y < height; y++)
+        {
+            var ink = 0;
+
+            for (var x = 0; x < width; x++)
+            {
+                if (buffer[y * stride + x * 4 + 3] >= 16) ink++;
+            }
+
+            if (ink * 4 >= width * 3)
+            {
+                run++;
+                continue;
+            }
+
+            if (run == 0) continue;
+
+            runs.Add($"{y - run}+{run}");
+            run = 0;
+        }
+
+        if (run > 0) runs.Add($"{height - run}+{run}");
+
+        return string.Join(";", runs);
+    }
+
+    /// <summary>
+    /// 把指纹拆成一段段。
+    /// </summary>
+    /// <remarks>
+    /// 两份指纹是<b>逐字</b>比较的，不再留任何容差。曾经留过 1 像素（选中的标识线粗一倍，
+    /// 描线画在色块边缘时会多探出 1 像素），而那个 1 像素本身就不该存在——现在块内选中的
+    /// 那几条改成了<b>填充</b>（灰带，夹在色块之内），块的轮廓因此只由时间码决定，
+    /// 有选区与没选区画出来逐字节相同。判据收紧之后，任何形状变化都跑不掉。
+    /// </remarks>
+    private static List<(int Start, int End)> ParseRuns(string signature)
+    {
+        var runs = new List<(int Start, int End)>();
+        if (signature.Length == 0) return runs;
+
+        foreach (var part in signature.Split(';', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var pieces = part.Split('+');
+            var start = int.Parse(pieces[0]);
+            runs.Add((start, start + int.Parse(pieces[1]) - 1));
+        }
+
+        return runs;
+    }
+
+    /// <summary>
+    /// 检查「拖动落定之后与邻居合并」时的画法。
+    /// </summary>
+    /// <remarks>
+    /// 实机反馈的那一步：把一个色块拖到另一个色块<b>附近或重叠</b>再松手。
+    /// 判据见 <see cref="BandSignature"/>：形状只由时间码决定，选区只换颜色。
+    /// </remarks>
+    private static void MeasureMergedSelection(Size size)
+    {
+        _checks = 0;
+        _failed = 0;
+
+        const double Near = 18.4;   // 相距 1 秒的相邻两句只有 18.4 像素 < 合并门槛 22 → 合成一块
+        const double Far = 60.0;    // 同一对相距 60 像素 > 门槛 → 各自独立
+
+        var scene = new Size(WaveformColumnWidth + LyricColumnWidth, size.Height);
+
+        Console.WriteLine("---- 与邻居合并之后的画法 ----");
+
+        // ① 选中一条，然后缩小到它和邻居合并成一簇：这一簇里既有选中的又有没选中的。
+        var a = new LyricLine { Text = "先被选中的那一句", Start = TimeSpan.FromSeconds(10) };
+        var b = new LyricLine { Text = "后合并进来的那一句", Start = TimeSpan.FromSeconds(11) };
+        var pair = new List<LyricLine> { a, b };
+
+        var chosen = NewTrack(scene, pair);
+        chosen.PixelsPerSecond = Far;
+        chosen.ScrollSeconds = 9.5;
+        chosen.BeginGesture(new Point(WaveformColumnWidth + 60, (10 - 9.5) * Far), KeyModifiers.None);
+        chosen.EndGesture();
+        chosen.PixelsPerSecond = Near;
+
+        var plain = NewTrack(scene, pair);
+        plain.PixelsPerSecond = Near;
+        plain.ScrollSeconds = 9.5;
+
+        var withSelection = BandSignature(RasterizeToBitmap(chosen, scene, 1.0));
+        var without = BandSignature(RasterizeToBitmap(plain, scene, 1.0));
+
+        Console.WriteLine(
+            $"  选中一条之后缩小到与邻句合并（{LyricTrackView.LabelMinGap:F0} 像素门槛，间距 {Near:F1} 像素）");
+        Console.WriteLine($"    有选区（选中 {chosen.SelectionCount} 行） {withSelection}");
+        Console.WriteLine($"    没选区（选中 {plain.SelectionCount} 行） {without}");
+
+        Check("这一簇里确实只有一条被选中", chosen.SelectionCount == 1);
+        Check("合并之后是一整块（横线连成一段）", without.Length > 0 && !without.Contains(';'));
+        Check("选区不改变合并图形的形状（逐字相同）", withSelection == without);
+
+        // ② 实机那一步：选中一整块，拖到另一块附近松手，落定之后必须仍然是一整块。
+        var first = new List<LyricLine>
+        {
+            new() { Text = "甲一", Start = TimeSpan.FromSeconds(30) },
+            new() { Text = "甲二", Start = TimeSpan.FromSeconds(30.05) },
+            new() { Text = "甲三", Start = TimeSpan.FromSeconds(30.10) },
+        };
+
+        var second = new List<LyricLine>
+        {
+            new() { Text = "乙一", Start = TimeSpan.FromSeconds(33) },
+            new() { Text = "乙二", Start = TimeSpan.FromSeconds(33.05) },
+            new() { Text = "乙三", Start = TimeSpan.FromSeconds(33.10) },
+        };
+
+        var lyrics = new List<LyricLine>();
+        lyrics.AddRange(first);
+        lyrics.AddRange(second);
+
+        var view = NewTrack(scene, lyrics);
+        view.PixelsPerSecond = Near;
+        view.ScrollSeconds = 29;
+
+        var clusters = new List<LyricMarkCluster>();
+        LyricTrackView.GroupInto(clusters, lyrics, 29, Near, LyricTrackView.LabelMinGap);
+
+        Check("拖动之前是两块", clusters.Count == 2);
+
+        var topY = clusters[0].TopY;
+        IReadOnlyList<LyricTimeTarget>? reported = null;
+        view.TimesChanged += (_, e) => reported = e.Targets;
+
+        // 往下拖 40 像素 ≈ 2.17 秒，正好让两段挨到一起。
+        view.BeginGesture(new Point(WaveformColumnWidth + 60, topY), KeyModifiers.None);
+        view.ContinueGesture(new Point(WaveformColumnWidth + 60, topY + 40));
+        view.EndGesture();
+
+        // 照视图模型的做法落定：算出前后值 → 做成一步可撤销的改动 → 重新发布。
+        var plan = LyricTimeline.Plan(reported!, lyrics, TimeSpan.FromSeconds(0.02));
+        new TimeShiftCommand(plan.Changes).Apply();
+        lyrics.Sort(static (left, right) => Nullable.Compare(left.Start, right.Start));
+        view.Lyrics = [.. lyrics];
+
+        LyricTrackView.GroupInto(clusters, lyrics, 29, Near, LyricTrackView.LabelMinGap);
+
+        var after = BandSignature(RasterizeToBitmap(view, scene, 1.0));
+        var reference = BandSignature(RasterizeToBitmap(NewTrack(scene, lyrics, Near, 29), scene, 1.0));
+
+        Console.WriteLine(
+            $"  拖走一块之后落定：{plan.Report.Changed} 行改了时间码，{clusters.Count} 簇"
+            + $"（选中 {view.SelectionCount} 行）");
+        Console.WriteLine($"    有选区 {after}");
+        Console.WriteLine($"    没选区 {reference}");
+
+        var same = after == reference;
+
+        Check("拖过去之后与目标合成一簇", clusters.Count == 1);
+        Check("落定之后仍是一整块（没有散成一条条线）", same && ParseRuns(reference).Count == 1);
+        Check("落定之后选区还在（不需要先取消选择）", view.SelectionCount == 3);
+
+        Report();
+    }
+
+    /// <summary>造一个只有歌词标识层的控件，用于形状对比。</summary>
+    private static LyricTrackView NewTrack(Size scene, IReadOnlyList<LyricLine> lyrics,
+                                           double pixelsPerSecond = 40, double scrollSeconds = 0)
+    {
+        var track = new LyricTrackView
+        {
+            Width = scene.Width,
+            Height = scene.Height,
+            TextInset = WaveformColumnWidth,
+            Lyrics = lyrics,
+            MinimumSeparation = TimeSpan.FromSeconds(0.02),
+            PixelsPerSecond = pixelsPerSecond,
+            ScrollSeconds = scrollSeconds,
+        };
+
+        Layout(track, scene);
+        return track;
+    }
+
+    /// <summary>
+    /// 复制一份歌词行。
+    /// </summary>
+    /// <remarks>
+    /// 拖动落定是就地改行对象的（那是产品里的真实做法），所以要把「会改数据的那一幕」
+    /// 与「给测量用的那一份」分开。共用一份的话，出图顺序就会悄悄改变测量的输入——
+    /// 踩过一次，表现是后面那一段测量整段跳过，而跳过只是因为一条长句被挪走了。
+    /// </remarks>
+    private static List<LyricLine> Clone(IReadOnlyList<LyricLine> lyrics) =>
+        [.. lyrics.Select(static line => new LyricLine { Text = line.Text, Start = line.Start, End = line.End })];
+
+    /// <summary>
+    /// 在控件上做一次完整的「按下 → 拖动 → 松手 → 落定」，照视图模型那一条路走。
+    /// </summary>
+    /// <remarks>
+    /// 落定这一步刻意不省：控件只负责报出「应该落到哪儿」，真正改时间码、错开、重新发布
+    /// 都在数据层。出图时要看到的是「松手之后的样子」，所以这一段必须真的跑一遍，
+    /// 而不是把控件摆成拖动中的姿势就算了。
+    /// </remarks>
+    private static void DropSelection(LyricTrackView track, double fromY, double toY)
+    {
+        const double x = WaveformColumnWidth + 60;
+
+        IReadOnlyList<LyricTimeTarget>? reported = null;
+        track.TimesChanged += (_, e) => reported = e.Targets;
+
+        track.BeginGesture(new Point(x, fromY), KeyModifiers.None);
+        track.ContinueGesture(new Point(x, toY));
+        track.EndGesture();
+
+        if (reported is null) return;
+
+        var lines = track.Lyrics!.ToList();
+        var plan = LyricTimeline.Plan(reported, lines, TimeSpan.FromSeconds(0.02));
+
+        new TimeShiftCommand(plan.Changes).Apply();
+
+        lines.Sort(static (left, right) => Nullable.Compare(left.Start, right.Start));
+
+        // 行对象没换，所以选区原样保住——这正是「不需要先取消选择」的那件事。
+        track.Lyrics = lines;
+    }
+
     private static void Layout(Layoutable view, Size size)
     {
         view.Measure(size);
         view.Arrange(new Rect(size));
+    }
+
+    /// <summary>
+    /// 记一条断言。
+    /// </summary>
+    /// <remarks>
+    /// 上面那些测量报的是数字（看数值合不合理），这一组报的是判定（行为对不对）。
+    /// 交互类的东西一旦错了不会崩、也不会难看到一眼发现，所以值得直接给出「通过 / 失败」，
+    /// 而不是留一串需要人去心算的数字。
+    /// </remarks>
+    private static void Check(string what, bool ok)
+    {
+        _checks++;
+
+        if (ok) return;
+
+        _failed++;
+        Console.WriteLine($"  × {what}");
+    }
+
+    private static void Report()
+    {
+        Console.WriteLine($"  检查 {_checks} 条，失败 {_failed} 条");
+        Console.WriteLine();
     }
 
     private static void Rasterize(WaveformView view, Size size, string? path)
