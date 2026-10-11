@@ -1,4 +1,7 @@
 <Solution>
   <Project Path="src/SimpleLyrics.Core/SimpleLyrics.Core.csproj" />
+  <Project Path="src/SimpleLyrics.Controls/SimpleLyrics.Controls.csproj" />
   <Project Path="src/SimpleLyrics.App/SimpleLyrics.App.csproj" />
+  <Project Path="tools/SimpleLyrics.Probe/SimpleLyrics.Probe.csproj" />
+  <Project Path="tools/SimpleLyrics.Preview/SimpleLyrics.Preview.csproj" />
 </Solution>

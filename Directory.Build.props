@@ -17,6 +17,34 @@
     <AvaloniaVersion>11.3.22</AvaloniaVersion>
     <NAudioVersion>3.1.0</NAudioVersion>
     <CommunityToolkitMvvmVersion>8.4.2</CommunityToolkitMvvmVersion>
+    <!-- 绑定版本 9.0.1.1 对应 FFmpeg 9.0.1；本机共享库为 9.0.2，ABI 同属 avcodec-63/avutil-61，兼容。 -->
+    <FFmpegAutoGenVersion>9.0.1.1</FFmpegAutoGenVersion>
+  </PropertyGroup>
+
+  <!--
+    沙箱适配（本机特有，不影响正常开发）：
+    本机命令行下的 pwsh 子进程无法写入工作区，因此仅在显式传入
+    -p:SLBuildToTemp=true 时，把中间产物与输出重定向到临时目录，
+    并按项目名分子目录 —— 否则多项目共用同一 obj 目录会导致
+    AssemblyInfo 特性重复（CS0579）。
+
+    在 Visual Studio 中构建时不传该属性，因此完全不生效，
+    产物照常落在工作区的 bin/ obj/。
+
+    用法：dotnet build <项目> -p:SLBuildToTemp=true
+  -->
+  <PropertyGroup Condition="'$(SLBuildToTemp)' == 'true'">
+    <BaseIntermediateOutputPath>$(TEMP)\sl-build\obj\$(MSBuildProjectName)\</BaseIntermediateOutputPath>
+    <BaseOutputPath>$(TEMP)\sl-build\bin\$(MSBuildProjectName)\</BaseOutputPath>
+
+    <!--
+      产物目录一旦改到临时区，SDK 默认就不再排除项目下的 obj/ 与 bin/。
+      于是上一次在 Visual Studio 中构建生成、含程序集特性的
+      *.AssemblyInfo.cs 会被当作普通源文件再次参与编译，
+      与新位置生成的那份冲突，触发 CS0579（特性重复）。
+      这里把这两处显式排除回来。
+    -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);obj\**;bin\**</DefaultItemExcludes>
   </PropertyGroup>
 
 </Project>

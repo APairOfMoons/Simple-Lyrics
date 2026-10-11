@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    SimpleLyrics.Controls —— 自绘 Avalonia 控件库。
+    刻意与 SimpleLyrics.App 分开：控件不依赖任何窗口、视图模型或应用外壳，
+    因此可以被离屏渲染工具（tools/SimpleLyrics.Preview）单独引用与光栅化。
+  -->
+  <PropertyGroup>
+    <RootNamespace>SimpleLyrics.Controls</RootNamespace>
+    <AssemblyName>SimpleLyrics.Controls</AssemblyName>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="$(AvaloniaVersion)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SimpleLyrics.Core\SimpleLyrics.Core.csproj" />
+  </ItemGroup>
+
+</Project>

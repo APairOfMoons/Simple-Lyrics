@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    SimpleLyrics.Preview —— 开发期工具：把自绘控件离屏渲染成 PNG。
+    没有显示环境（沙箱、CI）时用它核对视觉效果，省去反复启动 GUI。
+    不参与产品运行时。
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>SimpleLyrics.Preview</RootNamespace>
+    <AssemblyName>SimpleLyrics.Preview</AssemblyName>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="$(AvaloniaVersion)" />
+    <PackageReference Include="Avalonia.Desktop" Version="$(AvaloniaVersion)" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="$(AvaloniaVersion)" />
+    <PackageReference Include="Avalonia.Fonts.Inter" Version="$(AvaloniaVersion)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\SimpleLyrics.Controls\SimpleLyrics.Controls.csproj" />
+    <ProjectReference Include="..\..\src\SimpleLyrics.Core\SimpleLyrics.Core.csproj" />
+  </ItemGroup>
+
+</Project>

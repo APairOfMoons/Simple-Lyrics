@@ -1,17 +1,189 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:SimpleLyrics.App.ViewModels"
+        xmlns:controls="using:SimpleLyrics.Controls"
         x:Class="SimpleLyrics.App.Views.MainWindow"
+        x:DataType="vm:MainWindowViewModel"
         Title="Simple Lyrics"
-        Width="1200" Height="720"
-        MinWidth="900" MinHeight="560">
+        Width="1280" Height="820"
+        MinWidth="1000" MinHeight="640"
+        Background="#FF0B0D11">
 
-  <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="8">
-    <TextBlock Text="Simple Lyrics"
-               FontSize="32" FontWeight="SemiBold"
-               HorizontalAlignment="Center" />
-    <TextBlock Text="骨架已就绪 —— 等待接入音频与波形模块"
-               Opacity="0.6"
-               HorizontalAlignment="Center" />
-  </StackPanel>
+  <DockPanel LastChildFill="True">
+
+    <!-- ============================ 顶部工具栏 ============================ -->
+    <Border DockPanel.Dock="Top"
+            Background="#FF14171D"
+            BorderBrush="#FF242A35" BorderThickness="0,0,0,1"
+            Padding="14,10">
+      <Grid ColumnDefinitions="Auto,Auto,Auto,*,Auto,Auto,Auto">
+
+        <Button Grid.Column="0"
+                Content="打开音频…"
+                Click="OnOpenClick"
+                Padding="16,7"
+                CornerRadius="6" />
+
+        <Button Grid.Column="1"
+                Classes="accent"
+                Content="{Binding PlayButtonText}"
+                Click="OnPlayClick"
+                IsEnabled="{Binding CanTogglePlayback}"
+                Margin="10,0,0,0"
+                MinWidth="76"
+                Padding="16,7"
+                CornerRadius="6" />
+
+        <Button Grid.Column="2"
+                Content="复位"
+                Click="OnResetClick"
+                IsEnabled="{Binding HasAudio}"
+                Margin="8,0,0,0"
+                Padding="16,7"
+                CornerRadius="6"
+                ToolTip.Tip="缩放回整曲铺满，并把曲首对齐到播放指示器" />
+
+        <TextBlock Grid.Column="3"
+                   Margin="16,0"
+                   VerticalAlignment="Center"
+                   Text="{Binding FileName}"
+                   Foreground="#FFE8ECF4"
+                   TextTrimming="CharacterEllipsis" />
+
+        <ProgressBar Grid.Column="4"
+                     Width="130" Height="4"
+                     Margin="0,0,16,0"
+                     VerticalAlignment="Center"
+                     Minimum="0" Maximum="1"
+                     Value="{Binding Progress}"
+                     IsVisible="{Binding IsBusy}" />
+
+        <TextBlock Grid.Column="5"
+                   Margin="0,0,16,0"
+                   VerticalAlignment="Center"
+                   Text="准备中…"
+                   Foreground="#FFFBBF24"
+                   IsVisible="{Binding IsPreparing}" />
+
+        <TextBlock Grid.Column="6"
+                   VerticalAlignment="Center"
+                   Text="{Binding PositionText}"
+                   Foreground="#FF9AA5B8"
+                   FontFamily="Consolas, Cascadia Mono, monospace" />
+      </Grid>
+    </Border>
+
+    <!-- ============================ 底部状态栏 ============================ -->
+    <Border DockPanel.Dock="Bottom"
+            Background="#FF14171D"
+            BorderBrush="#FF242A35" BorderThickness="0,1,0,0"
+            Padding="14,7">
+      <TextBlock Text="{Binding StatusText}"
+                 Foreground="#FF9AA5B8"
+                 TextTrimming="CharacterEllipsis" />
+    </Border>
+
+    <!-- ======================== 左 / 中 / 右三栏 ========================= -->
+    <Grid ColumnDefinitions="330,*,300">
+
+      <!-- 左栏：竖直波形。窄而高，正好容纳「时间从上到下」的布局。 -->
+      <Border Grid.Column="0"
+              Background="#FF0E1014"
+              BorderBrush="#FF242A35" BorderThickness="0,0,1,0">
+        <controls:WaveformView Name="Waveform"
+                               Peaks="{Binding Peaks}"
+                               ScrollSeconds="{Binding ScrollSeconds, Mode=TwoWay}"
+                               PixelsPerSecond="{Binding PixelsPerSecond, Mode=TwoWay}"
+                               IsPlaying="{Binding IsPlaying}"
+                               PlayheadSeconds="{Binding PlayheadSeconds, Mode=TwoWay}"
+                               PlayStartSeconds="{Binding PlayStartSeconds, Mode=OneWayToSource}"
+                               CacheStartSeconds="{Binding CacheStartSeconds}"
+                               CacheEndSeconds="{Binding CacheEndSeconds}" />
+      </Border>
+
+      <!--
+        中栏：歌词。分左右两栏，左栏是已经盖了时间戳的行，右栏是还没打轴的行。
+        打轴的过程就是把行从右边搬到左边，所以这个布局本身就是工作流的写照。
+      -->
+      <Grid Grid.Column="1" ColumnDefinitions="*,*">
+
+        <Border Grid.Column="0"
+                Background="#FF0B0D11"
+                BorderBrush="#FF242A35" BorderThickness="0,0,1,0">
+          <DockPanel LastChildFill="True">
+            <StackPanel DockPanel.Dock="Top" Margin="22,20,22,12" Spacing="4">
+              <TextBlock Text="已绑定"
+                         FontSize="14" FontWeight="SemiBold"
+                         Foreground="#FFE8ECF4" />
+              <TextBlock Text="带时间戳的歌词行"
+                         FontSize="11"
+                         Foreground="#FF6E7889" />
+            </StackPanel>
+
+            <TextBlock Margin="22,0,22,20"
+                       TextWrapping="Wrap" LineHeight="21"
+                       VerticalAlignment="Top"
+                       Foreground="#FF8B95A8"
+                       Text="此栏尚未实现。将按时间顺序列出已经盖好时间戳的歌词行，当前播放到的那一行会高亮；点击某一行可把播放头跳到它的时间点。" />
+          </DockPanel>
+        </Border>
+
+        <Border Grid.Column="1" Background="#FF0B0D11">
+          <DockPanel LastChildFill="True">
+            <StackPanel DockPanel.Dock="Top" Margin="22,20,22,12" Spacing="4">
+              <TextBlock Text="未绑定"
+                         FontSize="14" FontWeight="SemiBold"
+                         Foreground="#FFE8ECF4" />
+              <TextBlock Text="等待打轴的歌词行"
+                         FontSize="11"
+                         Foreground="#FF6E7889" />
+            </StackPanel>
+
+            <TextBlock Margin="22,0,22,20"
+                       TextWrapping="Wrap" LineHeight="21"
+                       VerticalAlignment="Top"
+                       Foreground="#FF8B95A8"
+                       Text="此栏尚未实现。粘贴进来的歌词文本先落在这里，按空格键把当前播放位置盖给光标所在行之后，该行就移到左栏。" />
+          </DockPanel>
+        </Border>
+
+      </Grid>
+
+      <!-- 右栏：文件信息 -->
+      <Border Grid.Column="2"
+              Background="#FF14171D"
+              BorderBrush="#FF242A35" BorderThickness="1,0,0,0">
+        <DockPanel LastChildFill="True">
+
+          <TextBlock DockPanel.Dock="Top"
+                     Text="文件信息"
+                     Margin="18,20,18,14"
+                     FontSize="14" FontWeight="SemiBold"
+                     Foreground="#FFE8ECF4" />
+
+          <ScrollViewer>
+            <ItemsControl ItemsSource="{Binding Details}" Margin="18,0,18,20">
+              <ItemsControl.ItemTemplate>
+                <DataTemplate x:DataType="vm:InfoRow">
+                  <StackPanel Spacing="2" Margin="0,0,0,13">
+                    <TextBlock Text="{Binding Label}"
+                               FontSize="11"
+                               Foreground="#FF6E7889" />
+                    <TextBlock Text="{Binding Value}"
+                               FontSize="12.5"
+                               Foreground="#FFD3DAE6"
+                               TextWrapping="Wrap"
+                               LineHeight="19" />
+                  </StackPanel>
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+          </ScrollViewer>
+
+        </DockPanel>
+      </Border>
+
+    </Grid>
+  </DockPanel>
 
 </Window>

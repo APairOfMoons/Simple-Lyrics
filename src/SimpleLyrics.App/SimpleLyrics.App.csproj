@@ -24,6 +24,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\SimpleLyrics.Core\SimpleLyrics.Core.csproj" />
+    <ProjectReference Include="..\SimpleLyrics.Controls\SimpleLyrics.Controls.csproj" />
   </ItemGroup>
 
 </Project>

@@ -53,3 +53,23 @@ $RECYCLE.BIN/
 
 # 构建/验证用的临时探针
 src/_probe/
+
+## ---------------------------------------------------------------
+## 体积大的第三方二进制与素材（不入库）
+## ---------------------------------------------------------------
+# FFmpeg 共享库 DLL（约 113 MB）。来源、版本与获取方式见 third_party/ffmpeg/README.md
+# 注：这些 DLL 位于 bin/ 下，实际已被上方的 [Bb]in/ 规则覆盖；
+# 此处显式声明是为了让意图明确，也防止将来 [Bb]in/ 被调整后 DLL 意外入库。
+# 同目录的 LICENSE.txt 与 README.md 仍然入库。
+third_party/ffmpeg/bin/
+
+# 重新下载发行包后若直接解压，避免误入库
+ffmpeg-*/
+
+# P0 验证用音频素材（合计约 54 MB）
+/test.mp3
+/test.flac
+/test.aac
+/test.ogg
+
+/SANDBOX.md
