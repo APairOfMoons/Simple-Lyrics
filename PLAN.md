@@ -5,6 +5,17 @@
 > **本文档是规划的单一事实来源**，随决策更新。三份文档的分工：
 > 本文件（规划与全部设计决策）· `AGENTS.md`（构建与验证速查卡）· `SANDBOX.md`（本机沙箱限制，不入库）。
 
+## 怎么读这份文档
+
+- **接手的人先看**：§1 目标与范围（做到哪儿了）· §10 路线图（现在在哪一步）· §6 项目结构（代码在哪）。
+- **要改代码再看**：§7 各模块的设计要点——每一节都写了「为什么是这样」以及踩过的坑，
+  多数取舍都有对应的回归测量守着，改之前先跑一遍 §10 末尾的验证。
+- **§5 / §7 / §11 / §12 是结论与教训**，不重复叙述过程；被推翻的方案也在里面，标明是为什么被推翻的。
+
+> **两个开发工具不入库。** `SimpleLyrics.Probe` 与 `SimpleLyrics.Preview` 只在本机的 `tools/` 下
+> （`.gitignore` 排除了整个 `tools/`，`SimpleLyrics.slnx` 里也没有它们）。
+> 本文档多处提到「由 Probe 断言」「由 Preview 核对」——指的是这两个工具，见 §6。
+
 ---
 
 ## 1. 目标与范围（v1）
@@ -142,6 +153,7 @@ mp3 / aac / flac / vorbis 解码器，全部落在 LGPL 覆盖范围内。
 | git | 2.55 |
 | 音频素材 | `samples/`：`test.mp3` / `test.flac` / `test.aac` / `test.ogg`（各约 234.9 秒）＋ 一个 29 MB 的长文件 ＋ `test.lrc`（与本表素材等长的样例歌词） |
 | 开发环境 | Visual Studio 18（原生支持 `.slnx`）；沙箱内只能命令行 |
+| 开发工具 | `tools/` 下的 Probe 与 Preview。**不入库**（见 §6），只在本机；VS 里用 `tools/SimpleLyrics.Tools.slnx` 打开 |
 
 ### 4.2 三条硬约束
 
@@ -249,7 +261,8 @@ Simple Lyrics/
 ├─ AGENTS.md                          # 每次会话加载的速查卡：规则 + 构建 + 验证（入库）
 ├─ PLAN.md                            # 本文件：规划与全部设计决策（入库）
 ├─ SANDBOX.md                         # 本机沙箱手册（不入库）
-├─ SimpleLyrics.slnx                  # 解决方案（VS 18 原生格式）
+├─ README.md                          # 占位（尚未写）
+├─ SimpleLyrics.slnx                  # 解决方案：只含 src/ 下的三个项目（VS 18 原生格式）
 ├─ Directory.Build.props              # 统一 TFM、依赖版本、沙箱产物重定向
 ├─ NuGet.config                       # 包源锁定
 ├─ .gitignore / .gitattributes
@@ -269,16 +282,22 @@ Simple Lyrics/
 │  │                                  #   LyricTimeline：最小间隔、错开、以及「算前后值」
 │  ├─ SimpleLyrics.Controls/          # 自绘 Avalonia 控件库（引用 Avalonia + Core）
 │  │  ├─ WaveformView.cs              #   竖直时间轴波形：波带绘制 / 指示器 / 拖动定位 / 缩放
-│  │  └─ LyricTrackView.cs            #   横跨「波形栏 + 已绑定栏」的歌词标识层，含选中与拖动
+│  │  ├─ LyricTrackView.cs            #   歌词标识层：布局、合并、排版、绘制
+│  │  ├─ LyricTrackView.Selection.cs  #   同一个类的另一半：命中、选区、拖动、预览位置
+│  │  ├─ LyricMarkCluster.cs          #   一簇标识线（屏幕坐标 + 行区间）
+│  │  ├─ LyricLabelPlan.cs            #   一条标签排几行
+│  │  └─ LyricTimeChangeEventArgs.cs  #   拖动落定时报出去的目标时刻
 │  └─ SimpleLyrics.App/               # Avalonia 界面层（WinExe）
 │     ├─ app.manifest                 #   高 DPI 感知
 │     ├─ Program.cs / App.axaml(.cs)  #   Fluent 主题，深色
-│     ├─ ViewModels/MainWindowViewModel.cs
+│     ├─ ViewModels/MainWindowViewModel.cs         # 音频与播放
+│     ├─ ViewModels/MainWindowViewModel.Lyrics.cs  # 歌词文档：载入 / 编辑 / 撤销 / 保存
 │     └─ Views/MainWindow.axaml(.cs)  #   顶部工具栏 / 底部状态栏 / 左中右三栏
-└─ tools/                             # 不参与产品运行时，可整目录删除
-   ├─ SimpleLyrics.Probe/             # 数据正确性：解码 / 峰值 / 播放缓存 / seek 精度
-   │                                  #   LyricsProbe（读）/ LyricEditProbe（写与时间轴约束）
-   └─ SimpleLyrics.Preview/           # 波形控件与歌词标识层离屏渲染成 PNG，外加一组回归测量
+└─ tools/                             # 开发工具：不入库，只在本机（见下）
+   ├─ SimpleLyrics.Tools.slnx         #   在 VS 里打开它
+   ├─ SimpleLyrics.Probe/             #   数据正确性：解码 / 峰值 / 播放缓存 / seek 精度
+   │                                  #   LyricsProbe（读）/ LyricEditProbe（写、时间轴约束、撤销）
+   └─ SimpleLyrics.Preview/           #   波形控件与歌词标识层离屏渲染成 PNG，外加一组回归测量
 ```
 
 **分层意义**：
@@ -289,14 +308,15 @@ Simple Lyrics/
   因此可以被 `SimpleLyrics.Preview` 单独引用并光栅化。把控件与 App 分开之后，
   「改一个视觉参数 → 渲染 PNG → 看结果」全程不需要启动 GUI；连「点一下、拖一段」这类交互
   也能在工具里对着控件真的做一遍（见 `MeasureLyricEditing`）。
-- 两个 `tools/` 项目都不参与产品运行时，可以随时删除而不影响发布物。
+- 两个 `tools/` 项目**不参与产品运行时**，也**不随产品分发**，所以整目录移出了仓库：
+  仓库里只留产品与文档，工具留在本机（`.gitignore` 排除 `tools/`，`SimpleLyrics.slnx` 里也没有它们）。
+  代价是**换一台机器就没有验证手段了**，得重新写或从历史提交里取回
+  （移出仓库前的最后一次提交是 `ccde441`）。这个取舍是管理员在本轮定的。
 
 后续将按需增补：
 
 ```
-Core/Lyrics/     （已补齐 LrcWriter / LrcTimecode）
 Core/Editing/    批量偏移、全局延迟补偿各自的命令（框架已在，见 §7.6「撤销」）
-App/ViewModels/  MainWindowViewModel 的拆分
 Core/Peaks/      PeakCacheStore.cs                    # *.slp 旁车缓存（长文件实测后再做）
 tests/SimpleLyrics.Core.Tests/                        # 需先经管理员审核测试框架依赖
 ```
@@ -939,3 +959,4 @@ sealed class LyricDocument {
 | **保存框架（Ctrl+S）** | 新增 `LrcTimecode`（时间码的格式与粒度，全项目唯一一份）、`LrcWriter`（保存的唯一出口）、`LyricDocument.SourcePath`。有源文件与没有源文件**只差路径从哪儿来**：前者原地写回，后者弹一次保存对话框（建议名 `<音频名>.lrc`），写完之后 `SourcePath` 就指了过去——于是将来「从零创建歌词」在数据层没有任何分支。写出按时间升序、UTF-8 带 BOM、`CRLF`、纯函数（写两次逐字节相同，往返也逐字节相同，均由探针断言）。未保存的改动会挡住「换音频」与「导入新歌词」，并给出 `Ctrl+S` / `Ctrl+Shift+D` 两条出路 |
 | **合并画法与撤销（实机反馈驱动）** | 管理员报了一个真缺陷：把一个色块拖到另一个色块附近松手，新合并出来的簇**当场散成一条条线，非得取消选择才重新合并**。根因是画法跟着选区走——簇里既有选中的又有没选中的时，代码把色块拆开画。现在**形状只由时间码决定，选区只换颜色**：部分选中的色块仍是一整块，选中的那几条在块内铺成**灰色横带**，块上的字变成「N 行 · 已选 M」；整块选中则整体换成白色系。灰色横带是第二版：第一版画的是 4 像素白线，而块上那行字也是近白的，两者压在同一小块地方混成一片（实机反馈），改成填充之后「一块浅色区域」与「一根笔画」再也不会混；灰带比色块底色亮约一档、夹在块内，于是块的轮廓仍只由时间码决定——`MeasureMergedSelection` 的两份形状指纹现在**逐字相同**（早先是白线探出块沿 1 像素，判据只能留容差）。同时把选中色从琥珀改成**白**（与播放指示条同色，实机分不清；现在一个颜色一个主人），并给色块上的字放了一条「宁可探出 1 像素」的规矩——两行的块高 18 像素、字高 16.6，按原来的「+2 边距」判，「已选 1」正好写不进去，而那正是唯一的文字线索。撤销也落在这一轮：`Core/Editing` 的 `IEditCommand` + `TimelineEditHistory` + `TimeShiftCommand`，`LyricTimeline` 相应拆成「算（`Plan`，只算前后值）」与「落（由命令执行）」，`Ctrl+Z` / `Ctrl+Y` 可用；「有没有未保存的改动」改由历史位置推出，于是「改一笔又撤回来」不会再误报未保存 |
 | 本轮踩坑（四条） | ① 错开算法的「禁区并集」最初只往一个方向扩：左边的邻人只压低左端、右边的只抬高右端。但目标左边的邻人同样向右铺开禁区、同样盖住目标，右端必须被它抬高——漏掉这一半的表现是「错开之后仍然重叠」，而那正是这条约束唯一要防的事。探针里「错开之后最紧的一对 ≥ 20 毫秒」那条断言就是为它写的。② 显示层把「选中」与「正在被拖动」混成了一个判断（`_draggingMarks && 选中`），于是**框选拉完看不出选了谁**——不崩、不报错，只有渲染图里才看得出来。现在 `Preview` 会去数白色像素：没有选中项时必须恰好 0 个。③ 那条像素断言的判据一开始写得太松（「偏橙就算」），把文字抗锯齿留下的橙黄色次像素彩边一起数了进来，于是「没选中也有 497 个」；改成只认完全等于目标的颜色之后，未选中确实是 0。④ **诊断工具自己踩了一次**：出图那一幕会真的把拖动落定（就地改行对象），而那份示范歌词还要给后面的测量用——共用一份的后果是「量到的是被那一幕改过的数据」，表现却是后面整段测量**静默跳过**（只因为那条最长的句子被挪走了，挑不出合适的单行目标）。现在那一幕单发一份拷贝 |
+| **工作区整理与交接** | ① **开发工具移出仓库**：`tools/` 整个目录不再入库（`.gitignore` 排除），`SimpleLyrics.slnx` 只留 `src/` 下三个项目；工具本身留在本机，另给一个 `tools/SimpleLyrics.Tools.slnx` 供 VS 打开。理由是仓库只该留产品与文档；代价是换机器就没有验证手段，取回办法写在 §6 与 `SANDBOX.md`。② **代码按「一个类型一个文件」理齐**：`LyricLabelPlan` / `LyricTimeChangeEventArgs` 各自成文件；`LyricTrackView`（1470 行）拆成画面与交互两个 partial 文件（852 + 438），`MainWindowViewModel`（948 行）拆成音频播放与歌词文档两个 partial 文件（525 + 352）。拆的只是文件，状态仍共用——拆成两个类的话，「命中要看排版结果、绘制要看选区状态」这条双向依赖就得靠接口互相传。③ **提示词精简**：`AGENTS.md` 重写成接手视角的速查卡（规则 / 目录 / 构建 / 验证 / 查不了什么），`PLAN.md` 顶部加「怎么读这份文档」，§6 项目结构跟上真实布局。④ 新增 `README.md` 占位 |
