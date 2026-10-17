@@ -5,7 +5,20 @@ namespace SimpleLyrics.Core.Editing;
 /// <summary>一行歌词要落到哪个时刻。</summary>
 /// <param name="Line">被改动的行。</param>
 /// <param name="Start">它想去的时间码（应当已经是 <see cref="LrcTimecode.Quantize"/> 过的）。</param>
-public readonly record struct LyricTimeTarget(LyricLine Line, TimeSpan Start);
+/// <param name="OnlyLater">
+/// <b>只许往晚让</b>：目标时刻被邻居的禁区盖住时，往后找位置，绝不往前插。
+/// <para>
+/// 盖章传 <c>true</c>。它盖的是「栈顶那一行」，也就是顺序上接在<b>最后</b>的那一句；
+/// 而往前让会把它插进已经盖好的句子中间，时间顺序与歌词顺序就此相反。这条规矩只在
+/// 「目标落在邻居的禁区里」时才起作用，而正常顺序打轴（播放头一直在前进）根本走不到——
+/// 它守的是暂停着连按的那条路。
+/// </para>
+/// <para>
+/// 拖动传 <c>false</c>：被拖的行本来就有一个位置，挪到离目标最近的空位上才符合直觉，
+/// 哪怕那个空位在邻居前面。
+/// </para>
+/// </param>
+public readonly record struct LyricTimeTarget(LyricLine Line, TimeSpan Start, bool OnlyLater = false);
 
 /// <summary>一次时间轴改动的结果，供状态栏说明发生了什么。</summary>
 /// <param name="Changed">时间真的变了的行数。</param>
@@ -78,6 +91,8 @@ public static class LyricTimeline
     /// 顺序：把 <paramref name="targets"/> 按目标时刻从早到晚放，先到的占住位置，
     /// 后到的绕开它。每次绕开都取<b>离目标最近的那个空位</b>，于是错开幅度最小；
     /// 等距时按这一行原本的先后决定往哪边让，尽量不打乱用户心里的顺序。
+    /// 唯一的例外是盖章（<see cref="LyricTimeTarget.OnlyLater"/>）：它只往后让，
+    /// 因为新盖的那一句排在最后，插到前面去会让时间顺序与歌词顺序相反。
     /// </para>
     /// </remarks>
     /// <param name="targets">本次要改动的行与它们的目标时刻。</param>
@@ -126,9 +141,12 @@ public static class LyricTimeline
             // 音频之前没有内容可言，而负时刻连 LRC 都写不出来（解析端不接受负号），
             // 所以 0 秒是硬下界：拖到更早的位置就停在 0。
             var wanted = Math.Max(LrcTimecode.ToUnits(target.Start), 0);
+
+            // 等距时按这一行「原本」的先后决定往哪边让。还没有时刻的行（盖章）走不到
+            // 这一步——它一律只许往晚让（见 LyricTimeTarget.OnlyLater）。
             var original = LrcTimecode.ToUnits(target.Line.Start ?? TimeSpan.Zero);
 
-            var place = NearestFree(wanted, occupied, steps, original);
+            var place = NearestFree(wanted, occupied, steps, original, target.OnlyLater);
             result[index] = LrcTimecode.FromUnits(place);
 
             var position = occupied.BinarySearch(place);
@@ -202,9 +220,11 @@ public static class LyricTimeline
     /// <para>
     /// 端点相同时（正好落在别人头上）按这一行<b>原本</b>的先后决定往哪边让：
     /// 本来在前的往前错、本来在后的往后错，顺序因此不会因为一次拖动而颠倒。
+    /// 而 <paramref name="onlyLater"/> 为 <c>true</c> 时（盖章）连这一步都不必问：
+    /// 它一律往后让，因为新盖的那一句在顺序上就排在最后。
     /// </para>
     /// </remarks>
-    private static long NearestFree(long wanted, List<long> occupied, long steps, long original)
+    private static long NearestFree(long wanted, List<long> occupied, long steps, long original, bool onlyLater)
     {
         if (occupied.Count == 0) return wanted;
 
@@ -257,6 +277,12 @@ public static class LyricTimeline
 
         // 往早挪会挪到音频之前，那就只能往晚挪。
         if (low < 0) return high;
+
+        // 盖章：不许插到已经盖好的句子前面去。这里不能图省事用「离目标最近」——
+        // 目标固定不动而邻居不断往后堆时（暂停着连按），最近的空位恰好是<b>往前</b>
+        // 那一格，于是后盖的句子一句句插进先盖的前面，时间顺序与歌词顺序相反。
+        // 屏幕上那只是一团挤在一起的色块，什么也看不出来，直到导出文件才发现顺序是反的。
+        if (onlyLater) return high;
 
         var earlier = wanted - low;
         var later = high - wanted;

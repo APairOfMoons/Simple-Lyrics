@@ -16,7 +16,7 @@
             Background="#FF14171D"
             BorderBrush="#FF242A35" BorderThickness="0,0,0,1"
             Padding="14,10">
-      <Grid ColumnDefinitions="Auto,Auto,Auto,Auto,*,Auto,Auto,Auto,Auto">
+      <Grid ColumnDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,*,Auto,Auto,Auto,Auto">
 
         <Button Grid.Column="0"
                 Content="打开音频…"
@@ -52,7 +52,35 @@
                 CornerRadius="6"
                 ToolTip.Tip="导入一份已经打好时间轴的 .lrc 歌词（Ctrl+I）。需要先打开音频——歌词是音频的侧车文件" />
 
-        <TextBlock Grid.Column="4"
+        <!--
+          文字用「粘贴」而不是「导入歌词文本」，是为了与紧挨着的「导入歌词…」一眼分得开：
+          两者都往歌词里加东西，区别只在加进来的是什么——那边是整个 .lrc 文件（自带时间轴），
+          这边是一段还没打轴的文本。工具栏宽度本来就紧张，短一点也排得开些。
+        -->
+        <Button Grid.Column="4"
+                Content="粘贴歌词…"
+                Click="OnPasteLyricsClick"
+                IsEnabled="{Binding HasAudio}"
+                Margin="8,0,0,0"
+                Padding="16,7"
+                CornerRadius="6"
+                ToolTip.Tip="把歌词文本粘进来，进「未绑定」栏等待打轴（Ctrl+T）。每行一句，空行会被丢掉" />
+
+        <!--
+          打轴这一步的主按钮：把「未绑定」栏栈顶那一行绑到播放指示线所在的时刻。
+          它紧跟在「粘贴歌词…」之后，因为两者正是连着用的两步——先贴文本，再一句句盖章。
+          离相邻歌词太近时的自动错开由数据层做（见 LyricTimeline），这里只负责报出结果。
+        -->
+        <Button Grid.Column="5"
+                Content="绑定到此刻"
+                Click="OnStampClick"
+                IsEnabled="{Binding CanStamp}"
+                Margin="8,0,0,0"
+                Padding="16,7"
+                CornerRadius="6"
+                ToolTip.Tip="把「未绑定」栏最上面那一行绑到播放指示线所在的时刻（Enter 或 F9）。离相邻歌词太近时会自动错开" />
+
+        <TextBlock Grid.Column="6"
                    Margin="16,0"
                    VerticalAlignment="Center"
                    Text="{Binding FileName}"
@@ -64,14 +92,15 @@
           固定不动的覆盖物与「随滚动经过那里的标签」必然打架：要么盖住标签，
           要么逼标签让位，而让位就是一个随滚动发生的显隐变化。
         -->
-        <TextBlock Grid.Column="5"
-                   Margin="0,0,16,0"
+        <TextBlock Grid.Column="7"
+                   Margin="0,0,14,0"
                    VerticalAlignment="Center"
                    Text="{Binding LyricsCaption}"
                    Foreground="#FFF9A8D4"
+                   TextTrimming="CharacterEllipsis"
                    IsVisible="{Binding HasLyrics}" />
 
-        <ProgressBar Grid.Column="6"
+        <ProgressBar Grid.Column="8"
                      Width="130" Height="4"
                      Margin="0,0,16,0"
                      VerticalAlignment="Center"
@@ -79,14 +108,14 @@
                      Value="{Binding Progress}"
                      IsVisible="{Binding IsBusy}" />
 
-        <TextBlock Grid.Column="7"
+        <TextBlock Grid.Column="9"
                    Margin="0,0,16,0"
                    VerticalAlignment="Center"
                    Text="准备中…"
                    Foreground="#FFFBBF24"
                    IsVisible="{Binding IsPreparing}" />
 
-        <TextBlock Grid.Column="8"
+        <TextBlock Grid.Column="10"
                    VerticalAlignment="Center"
                    Text="{Binding PositionText}"
                    Foreground="#FF9AA5B8"
@@ -151,25 +180,17 @@
               Background="#FF0B0D11"
               BorderBrush="#FF242A35" BorderThickness="0,0,1,0" />
 
-      <!-- 中栏右半：未绑定。P1c 的打轴环节再实现，接口已备在 LyricDocument.UntimedLines。 -->
+      <!--
+        中栏右半：未绑定歌词栈。
+        它自己画那条与左栏对齐的播放指示线（位置取自波形控件的 IndicatorRatio，
+        由代码后置同步），因此这一栏不需要任何内边距——指示线要正好横贯它。
+        文字与栈顶的排布见 UnboundLyricView。
+      -->
       <Border Grid.Column="2" Background="#FF0B0D11"
               BorderBrush="#FF242A35" BorderThickness="0,0,1,0">
-        <DockPanel LastChildFill="True">
-          <StackPanel DockPanel.Dock="Top" Margin="22,20,22,12" Spacing="4">
-            <TextBlock Text="未绑定"
-                       FontSize="14" FontWeight="SemiBold"
-                       Foreground="#FFE8ECF4" />
-            <TextBlock Text="等待打轴的歌词行"
-                       FontSize="11"
-                       Foreground="#FF6E7889" />
-          </StackPanel>
-
-          <TextBlock Margin="22,0,22,20"
-                     TextWrapping="Wrap" LineHeight="21"
-                     VerticalAlignment="Top"
-                     Foreground="#FF8B95A8"
-                     Text="此栏尚未实现。粘贴进来的歌词文本先落在这里，按空格键把当前播放位置盖给光标所在行之后，该行就移到左栏。" />
-        </DockPanel>
+        <controls:UnboundLyricView Name="UnboundLyrics"
+                                   Lyrics="{Binding UntimedLyrics}"
+                                   EmptyHint="{Binding UnboundHint}" />
       </Border>
 
       <!-- 右栏：文件信息 -->

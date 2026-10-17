@@ -72,13 +72,99 @@ public sealed partial class LyricTrackView
     /// <summary>用户把选中的标识线拖到了新的时刻。</summary>
     public event EventHandler<LyricTimeChangeEventArgs>? TimesChanged;
 
+    /// <summary>
+    /// 用户按下了「移出」箭头：请把当前选中的这几行移出时间轴。
+    /// </summary>
+    /// <remarks>
+    /// 本控件只报告「按了什么」，不动数据——把行移出时间轴意味着改文档，而那是视图模型的事
+    /// （见 <c>MainWindowViewModel.UnbindLyrics</c>）。要移出哪些行由
+    /// <see cref="SelectedLines"/> 给出，而不是塞进事件参数里：事件参数多一份选区快照，
+    /// 就多一处可能与 <see cref="SelectionCount"/> 说法不一致的地方。
+    /// </remarks>
+    public event EventHandler? UnbindRequested;
+
     /// <summary>正在选中或拖动。</summary>
     public bool IsGestureActive => _draggingMarks || _marqueeing;
 
     /// <summary>当前选中的歌词行数。</summary>
     public int SelectionCount => _selected.Count;
 
+    /// <summary>当前选中的行，交给外面去改文档。</summary>
+    public IReadOnlyList<LyricLine> SelectedLines => [.. _selected];
+
     // ------------------------------------------------------------ 命中
+
+    /// <summary>
+    /// 「移出」箭头画在哪儿。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 纵向取选中各行在屏幕上的中点，横向贴在歌词栏右端内侧。选中项跨出视口时把位置
+    /// <b>夹回</b>可见范围，而不是让箭头跟着跑出去——跑出去等于没有这个按钮，
+    /// 而用户此刻恰恰需要它。
+    /// </para>
+    /// <para>
+    /// 返回 <c>null</c> 表示此刻不该有箭头：没有选中项，或者选中的行<b>全都</b>在视口之外。
+    /// 后一种情形里画一个贴在边缘的箭头只会像是界面出了错——那些行根本不在眼前。
+    /// </para>
+    /// <para>
+    /// 刻意只依赖 <see cref="_selected"/> 与 <see cref="MarkY"/>，不依赖分簇结果：
+    /// 于是「按下时判有没有点在箭头上」不必先把布局算一遍，也就不会与拖动路径重复计算。
+    /// </para>
+    /// </remarks>
+    private Point? ArrowCenter(double height)
+    {
+        if (_selected.Count == 0) return null;
+
+        var top = double.PositiveInfinity;
+        var bottom = double.NegativeInfinity;
+
+        foreach (var line in _selected)
+        {
+            var y = MarkY(line);
+            top = Math.Min(top, y);
+            bottom = Math.Max(bottom, y);
+        }
+
+        if (!double.IsFinite(top)) return null;
+        if (bottom < 0 || top > height) return null;
+
+        var center = Math.Clamp((top + bottom) / 2, ArrowRadius + 2, Math.Max(ArrowRadius + 2, height - ArrowRadius - 2));
+
+        return new Point(Math.Max(Bounds.Width, 0) - ArrowMargin - ArrowRadius, center);
+    }
+
+    /// <summary>指针是不是点在「移出」箭头上。</summary>
+    private bool HitArrow(Point point)
+    {
+        if (ArrowCenter(Bounds.Height) is not { } center) return false;
+
+        var dx = point.X - center.X;
+        var dy = point.Y - center.Y;
+
+        return dx * dx + dy * dy <= ArrowHitRadius * ArrowHitRadius;
+    }
+
+    /// <summary>
+    /// 点在「移出」箭头上就把它按下去。
+    /// </summary>
+    /// <remarks>
+    /// <b>必须先于 <see cref="BeginGesture"/> 判它。</b>箭头浮在歌词文字之上，那个位置
+    /// 同时也是某条标识线的标签区；若让 <see cref="BeginGesture"/> 先跑，这一下就会变成
+    /// 「点中一条标识线」而把选区换掉——于是用户想移出三行，结果只选中了指针底下那一行。
+    /// 分成两个入口而不是在 <see cref="BeginGesture"/> 里分叉，是因为两者的后续完全不同：
+    /// 移出是一次<b>立刻完成</b>的操作，不需要捕获指针、不需要锁住缩放，更没有拖动这回事。
+    /// </remarks>
+    /// <returns>是否命中箭头；命中时这次按下已被用完，调用方不要再启动选中或拖动。</returns>
+    public bool TryUnbindAt(Point point)
+    {
+        if (Lyrics is not { Count: > 0 }) return false;
+        if (point.X < Math.Max(TextInset, 0)) return false;
+        if (!HitArrow(point)) return false;
+
+        UnbindRequested?.Invoke(this, EventArgs.Empty);
+        return true;
+    }
 
     /// <summary>一簇（或其中一条）被画出来时，纵向覆盖到哪儿——命中测试用它来判断「点在这条歌词上」。</summary>
     private double LabelBottom(int index)

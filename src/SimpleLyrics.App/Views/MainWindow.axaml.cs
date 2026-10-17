@@ -6,6 +6,7 @@ using Avalonia.Interactivity;
 using Avalonia.Platform.Storage;
 using SimpleLyrics.App.ViewModels;
 using SimpleLyrics.Controls;
+using SimpleLyrics.Core.Lyrics;
 
 namespace SimpleLyrics.App.Views;
 
@@ -80,6 +81,10 @@ public partial class MainWindow : Window
         LyricMarks.TimesChanged += (_, e) => _viewModel.ApplyTimeShift(e.Targets);
         LyricMarks.SelectionChanged += OnLyricSelectionChanged;
 
+        // 「移出」箭头按下时把选中的那几行移出时间轴（压回「未绑定」栏）。
+        // 要移出哪些行由标识层自己的选区给出，事件里不带快照——两份选区迟早会说法不一。
+        LyricMarks.UnbindRequested += (_, _) => _viewModel.UnbindLyrics(LyricMarks.SelectedLines);
+
         // 用隧道阶段接住快捷键：冒泡阶段可能已被获得焦点的子控件消费掉，
         // 空格尤其如此——按钮拿到焦点后会把空格当成「点击」。
         AddHandler(KeyDownEvent, OnPreviewKeyDown, RoutingStrategies.Tunnel);
@@ -110,7 +115,22 @@ public partial class MainWindow : Window
 
     private void OnWaveformPropertyChanged(object? sender, AvaloniaPropertyChangedEventArgs e)
     {
-        if (e.Property == WaveformView.PeaksProperty) UpdateMinimumSeparation();
+        if (e.Property == WaveformView.PeaksProperty)
+        {
+            UpdateMinimumSeparation();
+
+            // 「未绑定」栏那条线标的是「播放头在哪儿」，而没有音频就没有播放头：
+            // 左栏此刻只显示一句提示，右栏却横着一条琥珀色的线，看上去像它标记着什么。
+            // 判据取波形控件那一份（HasWaveform），两栏因此永远同进同退。
+            UnboundLyrics.ShowIndicator = Waveform.HasWaveform;
+        }
+
+        // 「未绑定」栏里那条播放指示线是同一条线在右栏的延伸段：同一个高度比例、
+        // 同样的粗细与颜色，三栏又同高，于是两栏的线严格对齐。
+        // 走代码后置而不是 XAML 里的按名绑定（{Binding #Waveform.IndicatorRatio}），
+        // 与 TextInset 是同一条理由：那种写法在沙箱里无法运行时验证，而失效的表现
+        // 是两条线差出一截——安静地难看，只有开窗口才发现。
+        if (e.Property == WaveformView.IndicatorRatioProperty) UnboundLyrics.IndicatorRatio = Waveform.IndicatorRatio;
     }
 
     /// <summary>
@@ -152,6 +172,11 @@ public partial class MainWindow : Window
                 _ = PickAndImportLyricsAsync();
                 break;
 
+            case Key.T when e.KeyModifiers.HasFlag(KeyModifiers.Control):
+                e.Handled = true;
+                _ = PickAndImportLyricTextAsync();
+                break;
+
             // 保存键刻意要求「正好是 Ctrl」：Ctrl+Shift+S 是「另存为」的位置，留着。
             case Key.S when e.KeyModifiers == KeyModifiers.Control:
                 e.Handled = true;
@@ -161,6 +186,14 @@ public partial class MainWindow : Window
             case Key.D when e.KeyModifiers == (KeyModifiers.Control | KeyModifiers.Shift):
                 e.Handled = true;
                 _viewModel.DiscardLyricEdits();
+                break;
+
+            // 清空歌词。它是可撤销的一步（Ctrl+Z 能回来），所以不像别的破坏性操作那样
+            // 需要先问一次——撤销栈已经在了，用它换掉一个对话框是最划算的。
+            case Key.N when e.KeyModifiers == KeyModifiers.Control:
+                e.Handled = true;
+                if (LyricMarks.IsGestureActive) CommitLyricGesture();
+                _viewModel.ClearLyricsByUser();
                 break;
 
             // 撤销 / 重做。正在拖动时先把这一拖落定——用户按 Ctrl+Z 想要的大半正是
@@ -184,6 +217,26 @@ public partial class MainWindow : Window
                 CancelLyricGesture();
                 break;
 
+            // 盖章：把「未绑定」栏栈顶那一行绑到此刻播放指示线所在的时刻。
+            // Enter 与 F9 是 §8 定下的两个键，都收在这里。
+            //
+            // 与空格同一条坑：只拦 KeyDown 是不够的——松开时那个 Enter 仍会落到当前获得
+            // 焦点的按钮上，把它当成一次点击，于是打轴的同时又弹出一个文件对话框。
+            // 所以在隧道阶段吃掉并标记 Handled。
+            //
+            // 刻意不挡「自动重复」：按住 Enter 连着盖几句是打轴时很自然的用法，
+            // 而每一句都会因为离上一条太近被自动错开（那种情况下最后都会挤在 20 毫秒的
+            // 格子上排开，顺序不乱）。
+            case Key.Enter or Key.F9 when e.KeyModifiers == KeyModifiers.None:
+                e.Handled = true;
+
+                // 拖动途中按下去：先把这一拖落定。用户要盖的是屏幕上正看着的那一份，
+                // 而不是这次拖动开始之前的样子——与 Ctrl+S / Ctrl+Z 同一个口径。
+                if (LyricMarks.IsGestureActive) CommitLyricGesture();
+
+                _viewModel.StampTopLyric();
+                break;
+
             case Key.Space when e.KeyModifiers == KeyModifiers.None:
                 // 无论能不能播都要吃掉这个按键，否则焦点所在的按钮会同时被触发一次。
                 e.Handled = true;
@@ -200,6 +253,10 @@ public partial class MainWindow : Window
     private void OnOpenClick(object? sender, RoutedEventArgs e) => _ = PickAndLoadAsync();
 
     private void OnImportLyricsClick(object? sender, RoutedEventArgs e) => _ = PickAndImportLyricsAsync();
+
+    private void OnPasteLyricsClick(object? sender, RoutedEventArgs e) => _ = PickAndImportLyricTextAsync();
+
+    private void OnStampClick(object? sender, RoutedEventArgs e) => _viewModel.StampTopLyric();
 
     /// <summary>
     /// 鼠标滚轮在「已绑定歌词栏」上时，把事件转给波形控件。
@@ -239,7 +296,20 @@ public partial class MainWindow : Window
     private void OnLyricColumnPressed(object? sender, PointerPressedEventArgs e)
     {
         if (!e.GetCurrentPoint(LyricColumn).Properties.IsLeftButtonPressed) return;
-        if (!LyricMarks.BeginGesture(e.GetPosition(LyricMarks), e.KeyModifiers)) return;
+
+        var point = e.GetPosition(LyricMarks);
+
+        // 箭头浮在歌词文字之上，那个位置同时也是某条标识线的标签区，所以必须先判它：
+        // 若让 BeginGesture 先跑，这一下就变成「点中一条标识线」而把选区换掉，
+        // 用户想移出三行却只选中了指针底下那一行。
+        // 移出是一次立刻完成的操作，不需要捕获指针，也不需要锁住缩放。
+        if (LyricMarks.TryUnbindAt(point))
+        {
+            e.Handled = true;
+            return;
+        }
+
+        if (!LyricMarks.BeginGesture(point, e.KeyModifiers)) return;
 
         // 缩放是唯一能改变「两条标识线的屏幕间距」的东西，而拖动期间不重算合并与省略行数
         // 全靠那个间距不变。锁上之后 Ctrl+滚轮降级成普通滚动——手势还在进行中，
@@ -317,7 +387,11 @@ public partial class MainWindow : Window
     {
         var count = LyricMarks.SelectionCount;
 
-        if (count > 0) _viewModel.StatusText = $"已选中 {count} 行歌词 —— 按住上下拖动可改时间码，Esc 取消";
+        if (count > 0)
+        {
+            _viewModel.StatusText = $"已选中 {count} 行歌词 —— 按住上下拖动可改时间码，"
+                                  + "点右侧那个箭头可移出时间轴（回到「未绑定」栏），Esc 取消";
+        }
     }
 
     /// <summary>
@@ -325,13 +399,13 @@ public partial class MainWindow : Window
     /// </summary>
     /// <remarks>
     /// <para>
-    /// <b>有源文件与没有源文件在这里也只差一步</b>：有来源就直接写回，没有就问一次保存位置。
-    /// 拿到位置之后 <see cref="MainWindowViewModel.SaveLyrics"/> 会把它记成新的来源，
-    /// 于是「从零创建歌词」这件事不需要任何额外的分支——将来粘贴进来一份歌词、
-    /// 打完轴之后第一次按 Ctrl+S，走的正是这条路。
+    /// <b>「第一次保存」与「之后每次」在这里也只差一步</b>：已经有主去处就直接写回，
+    /// 没有就问一次保存位置。拿到位置之后 <see cref="MainWindowViewModel.SaveLyrics"/>
+    /// 会把它记成主去处，于是「从零创建歌词」不需要任何额外的分支——粘贴进来一份歌词、
+    /// 打完轴之后第一次按 <c>Ctrl+S</c>，走的正是这条路。
     /// </para>
     /// <para>
-    /// 拖动还没松手就按下 Ctrl+S 时，先把这次拖动落定再保存：用户要保存的显然是
+    /// 拖动还没松手就按下 <c>Ctrl+S</c> 时，先把这次拖动落定再保存：用户要保存的显然是
     /// 屏幕上正看着的那份，而不是它开始之前的样子。
     /// </para>
     /// </remarks>
@@ -339,17 +413,15 @@ public partial class MainWindow : Window
     {
         if (LyricMarks.IsGestureActive) CommitLyricGesture();
 
-        var document = _viewModel.Lyrics;
-
-        if (document is null)
+        if (!_viewModel.HasLyrics)
         {
-            _viewModel.StatusText = "还没有载入歌词，没有可保存的内容";
+            _viewModel.StatusText = "还没有歌词，没有可保存的内容";
             return;
         }
 
-        var path = document.SourcePath;
+        var sink = _viewModel.SaveTarget;
 
-        if (string.IsNullOrEmpty(path))
+        if (sink is null)
         {
             var suggested = _viewModel.SuggestedLyricPath;
 
@@ -362,11 +434,13 @@ public partial class MainWindow : Window
                 ShowOverwritePrompt = true,
             });
 
-            path = file?.TryGetLocalPath();
+            var path = file?.TryGetLocalPath();
             if (string.IsNullOrEmpty(path)) return;
+
+            sink = new LrcFileSink(path);
         }
 
-        _viewModel.SaveLyrics(path);
+        _viewModel.SaveLyrics(sink);
     }
 
     private void OnPlayClick(object? sender, RoutedEventArgs e) => _viewModel.TogglePlayPause();
@@ -434,6 +508,35 @@ public partial class MainWindow : Window
     /// 那与「换音频」是同一种丢失。同样在弹对话框之前就挡下。
     /// </para>
     /// </remarks>
+    /// <summary>
+    /// 打开「导入歌词文本」对话框，把粘进来的歌词放进「未绑定」栏。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 与导入 <c>.lrc</c> 一样要求先有音频：这份歌词迟早要绑到这首曲子上，而打开音频
+    /// 会清掉整份歌词（旧时间轴对新曲子毫无意义），先粘贴再打开等于白做一次。
+    /// </para>
+    /// <para>
+    /// 但<b>不</b>检查有没有未保存的改动——这个操作是往文档里<b>追加</b>，不换掉任何东西，
+    /// 而且它本身是一步可撤销的改动（<c>AddLyricLinesCommand</c>）。若拿「有未保存改动」
+    /// 把它挡下来，用户就没法分两次粘歌词了，而那样做毫无风险。
+    /// </para>
+    /// </remarks>
+    private async Task PickAndImportLyricTextAsync()
+    {
+        if (!_viewModel.HasAudio)
+        {
+            _viewModel.StatusText = "请先打开音频文件，再粘贴歌词 —— 这些歌词要绑到这首曲子的时间轴上";
+            return;
+        }
+
+        var text = await new ImportLyricsDialog().ShowDialog<string?>(this);
+
+        if (string.IsNullOrEmpty(text)) return;
+
+        _viewModel.ImportLyricText(text);
+    }
+
     private async Task PickAndImportLyricsAsync()
     {
         if (!_viewModel.HasAudio)

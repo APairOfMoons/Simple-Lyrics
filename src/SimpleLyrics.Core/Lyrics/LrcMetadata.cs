@@ -36,4 +36,32 @@ public sealed class LrcMetadata
     /// <summary>除 offset 之外没有任何元数据。</summary>
     public bool IsEmpty =>
         Title is null && Artist is null && Album is null && Author is null && Extra.Count == 0;
+
+    /// <summary>清空全部元数据。</summary>
+    public void Reset()
+    {
+        Title = null;
+        Artist = null;
+        Album = null;
+        Author = null;
+        OffsetMilliseconds = 0;
+        Extra.Clear();
+    }
+
+    /// <summary>把另一份元数据整体拷过来（会先清空自己）。</summary>
+    /// <remarks>
+    /// 逐字段拷贝而不是替换对象：<see cref="LyricDocument.Metadata"/> 是只读属性，
+    /// 而「文档实例固定、内容可变」这条约定让界面层省掉了许多「对象换了没有」的判断。
+    /// </remarks>
+    public void CopyFrom(LrcMetadata source)
+    {
+        Title = source.Title;
+        Artist = source.Artist;
+        Album = source.Album;
+        Author = source.Author;
+        OffsetMilliseconds = source.OffsetMilliseconds;
+
+        Extra.Clear();
+        foreach (var (key, value) in source.Extra) Extra[key] = value;
+    }
 }

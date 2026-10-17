@@ -52,8 +52,22 @@ public static class PeakGenerator
         decoder.DecodeTo(builder, progress, cancellationToken);
 
         stopwatch.Stop();
-        return new PeakGenerationResult(builder.Build(), decoder.Info, stopwatch.Elapsed);
+
+        var pyramid = builder.Build();
+
+        return new PeakGenerationResult(pyramid, WithExactBitRate(decoder, pyramid), stopwatch.Elapsed);
     }
+
+    /// <summary>
+    /// 用<b>精确时长</b>重算一次平均码率，换掉打开文件时那个只能按容器时长估出来的值。
+    /// </summary>
+    /// <remarks>
+    /// 容器声明的时长对 ADTS 之类的裸流是估算的（实测偏差近 30 秒），拿它做分母，
+    /// 码率就会跟着偏小一两成——而界面上那个数字正是用户用来对照「这是什么规格的音频」的。
+    /// 解码完之后长度有两个独立来源（累计样本数）与它对齐，此时再除一遍才是真值。
+    /// </remarks>
+    private static AudioFileInfo WithExactBitRate(FfmpegDecoder decoder, PeakPyramid pyramid) =>
+        decoder.Info with { BitRate = decoder.ResolveBitRate(pyramid.Duration) };
 
     /// <summary>解码落点：把交错的浮点流压缩成基础级的桶。</summary>
     private sealed class Builder : IPcmSink

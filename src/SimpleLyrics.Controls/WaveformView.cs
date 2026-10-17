@@ -142,14 +142,23 @@ public sealed class WaveformView : Control
     private static readonly IBrush CacheMaskBrush =
         new SolidColorBrush(Color.FromArgb(0x99, 0x08, 0x09, 0x0C));
 
-    private static readonly IBrush IndicatorBrush =
+    /// <summary>
+    /// 播放指示器的颜色。
+    /// </summary>
+    /// <remarks>
+    /// <b>这个颜色的主人是指示器本身，而不是波形控件。</b>未绑定歌词栏里也画一条同样的线——
+    /// 那条线不是「另一条指示器」，而是同一条指示器在右栏的延伸段（两栏同高、同一个高度比例，
+    /// 于是严格对齐）。两处若各自写一份颜色，改一处就会让它们悄悄分家，
+    /// 而「看上去不是同一条线」这种缺陷只会被眼睛发现、不会被断言抓住。
+    /// </remarks>
+    internal static readonly IBrush IndicatorBrush =
         new SolidColorBrush(Color.FromRgb(0xFF, 0xC2, 0x4A));
 
     /// <summary>指示器的外圈辉光，让它在密波形上也能被一眼找到。</summary>
-    private static readonly IPen IndicatorGlowPen =
+    internal static readonly IPen IndicatorGlowPen =
         new Pen(new SolidColorBrush(Color.FromArgb(0x40, 0xFF, 0xC2, 0x4A)), 5);
 
-    private static readonly IPen IndicatorPen =
+    internal static readonly IPen IndicatorPen =
         new Pen(new SolidColorBrush(Color.FromArgb(0xFF, 0xFF, 0xC2, 0x4A)), 1.5);
 
     private static readonly IBrush TipBackBrush =
@@ -310,6 +319,22 @@ public sealed class WaveformView : Control
         get => GetValue(PeaksProperty);
         set => SetValue(PeaksProperty, value);
     }
+
+    /// <summary>
+    /// 此刻画不画得出波形（也就是有没有一条音频）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 这不是「<see cref="Peaks"/> 非空」的同义词：空的金字塔（一级桶都没有）同样画不出东西，
+    /// 那时也只该显示一句提示。所以判据收在这里一处，绘制与外部都问它。
+    /// </para>
+    /// <para>
+    /// <b>外面为什么要问它。</b>「未绑定」栏里那条播放指示线是同一条线延伸过去的一段，
+    /// 而它标的是「播放头现在在哪儿」——没有音频时压根没有播放头可言，那条线孤零零地
+    /// 横在那里只会让人以为它标记着什么。于是那一栏画不画，跟着这个判据走。
+    /// </para>
+    /// </remarks>
+    public bool HasWaveform => Peaks is { BaseLevel.Count: > 0 };
 
     public double ScrollSeconds
     {
@@ -963,13 +988,13 @@ public sealed class WaveformView : Control
     {
         context.FillRectangle(Backdrop, new Rect(0, 0, width, height));
 
-        var peaks = Peaks;
-        if (peaks is null || peaks.BaseLevel.Count == 0)
+        if (!HasWaveform)
         {
             DrawHint(context, width, height);
             return;
         }
 
+        var peaks = Peaks!;
         var pixelsPerSecond = Math.Max(PixelsPerSecond, 1e-6);
         FillBands(peaks, pixelsPerSecond);
 

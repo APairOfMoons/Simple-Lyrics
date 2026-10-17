@@ -100,6 +100,7 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
     [NotifyPropertyChangedFor(nameof(DurationText))]
     [NotifyPropertyChangedFor(nameof(CanPlay))]
     [NotifyPropertyChangedFor(nameof(CanTogglePlayback))]
+    [NotifyPropertyChangedFor(nameof(CanStamp))]
     private PeakPyramid? _peaks;
 
     [ObservableProperty]
@@ -204,8 +205,10 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         FileName = Path.GetFileName(path);
         StatusText = $"正在解码 {FileName} …";
 
-        // .lrc 是音频的侧车文件：换了曲子，上一首的时间轴就不再指向任何东西。
-        ClearLyrics();
+        // .lrc 是音频的侧车文件：换了曲子，上一首的歌词整个不再指向任何东西。
+        // 清掉的行数留着说一声——里面可能有用户自己粘进来、还没打轴的文本，
+        // 那是找不回来的东西，不能无声地没掉。
+        var discarded = ClearLyrics();
 
         try
         {
@@ -222,6 +225,9 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
 
             StatusText = $"已载入 {FileName} · 权威时长 {FormatDuration(result.Pyramid.Duration)}"
                        + $" · 解码耗时 {result.Elapsed.TotalMilliseconds:F0} ms";
+
+            // 随音频自动找一次歌词（侧车）。找到了就整个换上去，并在状态栏说明来龙去脉。
+            LoadSidecarLyrics(discarded);
         }
         catch (Exception ex)
         {
@@ -530,40 +536,35 @@ public sealed partial class MainWindowViewModel : ObservableObject, IDisposable
         DisposePlayer();
     }
 
+    /// <summary>
+    /// 把载入结果里<b>用户要看</b>的那几项放进右栏；歌词那几行由
+    /// <c>RefreshLyricsDetails</c> 另行补上。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 只留「这是什么文件」与「它有多长」两件事。此前这里还摆着总帧数、峰值金字塔的级数与内存、
+    /// 解码耗时与倍速、播放缓存的块大小与预算、FFmpeg 运行库的版本与路径、以及容器声明的时长
+    /// ——那些都是开发期的排障数字：它们不改变用户能做的任何一个决定，却占掉了这个窄栏的大半，
+    /// 把真正要看的内容挤到下面去。
+    /// </para>
+    /// <para>
+    /// 需要那些数字时去看 <c>SimpleLyrics.Probe</c> 的输出，那里本来就打得更全，而且不会随时间
+    /// 变成一个没人维护的界面摆设。
+    /// </para>
+    /// <para>
+    /// <b>「时长」用的是完整解码累计出来的那个值</b>（<see cref="PeakPyramid.Duration"/>），
+    /// 不是容器声明的时长：ADTS 之类的裸流没有时长字段，容器只能按码率估算，实测偏差近 30 秒。
+    /// 这两个数字并排摆着、还得解释它们的差，本身就是一件该从界面上拿掉的事。
+    /// </para>
+    /// </remarks>
     private void FillDetails(PeakGenerationResult result)
     {
-        var pyramid = result.Pyramid;
         var info = result.Info;
-
-        var speed = result.Elapsed.TotalSeconds > 1e-6
-            ? pyramid.DurationSeconds / result.Elapsed.TotalSeconds
-            : 0;
 
         Details.Clear();
         Details.Add(new InfoRow("文件名", Path.GetFileName(info.Path)));
         Details.Add(new InfoRow("编解码器", info.Summary));
-        Details.Add(new InfoRow("权威时长", FormatDuration(pyramid.Duration)));
-        Details.Add(new InfoRow("总帧数", $"{pyramid.TotalFrames:N0} 帧/声道"));
-        Details.Add(new InfoRow(
-            "峰值金字塔",
-            $"{pyramid.Levels.Count} 级 · 最细 {PeakGenerator.BaseBucketFrames} 帧/桶 · "
-            + $"内存 {pyramid.ApproximateBytes / 1024.0:F0} KB"));
-        Details.Add(new InfoRow("解码性能", $"{result.Elapsed.TotalMilliseconds:F0} ms（约 {speed:F0} 倍实时）"));
-        Details.Add(new InfoRow(
-            "播放缓存",
-            $"{PcmBlockStore.BlockFrames} 帧/块 · 立体声每块 {PcmBlockStore.BlockFrames * 8 / 1024} KB · "
-            + $"上限随可用内存浮动，当前 {SystemMemory.CacheBudget() / 1024.0 / 1024.0:F0} MB"));
-        Details.Add(new InfoRow(
-            "FFmpeg 运行库",
-            $"{FfmpegRuntime.RuntimeVersion ?? "未加载"}\n{FfmpegRuntime.LibraryPath ?? "—"}"));
-
-        if (info.ContainerDuration > TimeSpan.Zero)
-        {
-            var drift = (info.ContainerDuration - pyramid.Duration).TotalMilliseconds;
-            Details.Add(new InfoRow(
-                "容器声明时长",
-                $"{FormatDuration(info.ContainerDuration)}（与权威时长相差 {drift:F0} ms）"));
-        }
+        Details.Add(new InfoRow("时长", FormatDuration(result.Pyramid.Duration)));
     }
 
     private static string FormatDuration(TimeSpan value) =>

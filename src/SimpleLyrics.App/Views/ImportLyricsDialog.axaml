@@ -1,0 +1,75 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="SimpleLyrics.App.Views.ImportLyricsDialog"
+        Title="导入歌词文本"
+        Width="580" Height="560"
+        MinWidth="420" MinHeight="340"
+        WindowStartupLocation="CenterOwner"
+        Background="#FF0B0D11">
+
+  <!--
+    粘贴歌词的对话框。刻意做成一个独立窗口，而不是在工具栏里展开一块输入区：
+    歌词文本通常有几十行，主窗口那一条工具栏（宽 1000 已经排得很满）挤不下，
+    而一个盖在中间、能调大小、能全选的窗口才是「把一大段文本交进来」该有的样子。
+  -->
+  <DockPanel LastChildFill="True">
+
+    <Border DockPanel.Dock="Top" Padding="20,18,20,10">
+      <StackPanel Spacing="6">
+        <TextBlock Text="导入歌词文本"
+                   FontSize="15" FontWeight="SemiBold"
+                   Foreground="#FFE8ECF4" />
+        <TextBlock TextWrapping="Wrap" FontSize="11.5" LineHeight="18"
+                   Foreground="#FF8B95A8"
+                   Text="每行一句歌词，空行会被丢掉。导入之后它们进入「未绑定」栏，栈顶那一行就是下一个要打轴的。" />
+      </StackPanel>
+    </Border>
+
+    <Border DockPanel.Dock="Bottom" Padding="20,12,20,16">
+      <Grid ColumnDefinitions="*,Auto,Auto">
+        <TextBlock Name="CountText"
+                   Grid.Column="0"
+                   VerticalAlignment="Center"
+                   FontSize="11.5"
+                   Foreground="#FF6E7889" />
+
+        <Button Grid.Column="1"
+                Content="取消"
+                Click="OnCancelClick"
+                Margin="0,0,8,0"
+                Padding="18,7"
+                CornerRadius="6" />
+
+        <!--
+          回车<b>不</b>绑定到「导入」：在这个窗口里回车是换行，绑上去的话用户每写一行
+          就会触发一次导入。于是「导入」只能点（或者先把内容写完再用鼠标点一下）。
+        -->
+        <Button Grid.Column="2"
+                Name="ImportButton"
+                Classes="accent"
+                Content="导入"
+                Click="OnImportClick"
+                IsEnabled="False"
+                Padding="18,7"
+                CornerRadius="6" />
+      </Grid>
+    </Border>
+
+    <TextBox Name="Input"
+             Margin="20,0"
+             AcceptsReturn="True"
+             TextWrapping="Wrap"
+             VerticalContentAlignment="Top"
+             VerticalAlignment="Stretch"
+             TextChanged="OnInputTextChanged"
+             FontSize="13"
+             Background="#FF14171D"
+             Foreground="#FFE8ECF4"
+             BorderBrush="#FF242A35" BorderThickness="1"
+             CornerRadius="6"
+             Padding="12,10"
+             Watermark="在这里粘贴歌词，一行一句…" />
+
+  </DockPanel>
+
+</Window>

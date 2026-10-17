@@ -113,6 +113,26 @@ public sealed partial class LyricTrackView : Control
     /// <summary>指针位移不超过这么多像素就只算「点了一下」，不动任何时间码。</summary>
     private const double ClickTolerance = 3;
 
+    // ------------------------------------------------------- 「移出」箭头
+    //
+    // 选中的那几行右侧会浮出一个小箭头，点它就把这几行移出时间轴、压回未绑定栏。
+    // 它是这一栏里唯一一个「按钮」，所以刻意长得像个按钮：实心圆底 + 白描边 + 白色箭头。
+
+    /// <summary>箭头圆底的半径。</summary>
+    private const double ArrowRadius = 9;
+
+    /// <summary>箭头离栏右边缘的距离。</summary>
+    private const double ArrowMargin = 10;
+
+    /// <summary>
+    /// 箭头的抓取半径，比圆底略大。
+    /// </summary>
+    /// <remarks>
+    /// 它是个按钮，点起来不该要求像素级对准。放大 3 像素不会误伤别的操作——
+    /// 箭头所在的这一小块地方本来就只有它一个可点的东西。
+    /// </remarks>
+    private const double ArrowHitRadius = ArrowRadius + 3;
+
     // ------------------------------------------------------------------ 外观
     //
     // 颜色分工（一个颜色只许有一个主人，否则用户没法靠颜色认东西）：
@@ -174,10 +194,23 @@ public sealed partial class LyricTrackView : Control
     private static readonly IBrush BlockTextOnActiveBrush =
         new SolidColorBrush(Color.FromRgb(0x14, 0x17, 0x1D));
 
-    private static readonly IBrush HintBrush =
-        new SolidColorBrush(Color.FromArgb(0x8C, 0xD8, 0xDF, 0xEC));
-
     private static readonly Typeface LabelTypeface = Typeface.Default;
+
+    /// <summary>
+    /// 「移出」箭头的圆底：<b>实心</b>。
+    /// </summary>
+    /// <remarks>
+    /// 箭头浮在歌词文字之上（它在栏的右端，而正文一直排到那里），半透明底会让文字从箭头里
+    /// 透出来，看上去像一团糊掉的墨。实心之后它就是一枚压在上面的按钮，谁也干扰不了谁。
+    /// 颜色取的是比画布略亮一档的深色，于是它看得出是「一个东西」，又不刺眼。
+    /// </remarks>
+    private static readonly IBrush ArrowBackBrush = new SolidColorBrush(Color.FromRgb(0x1B, 0x1F, 0x27));
+
+    /// <summary>圆底的描边，同时也是「白 = 我正在操作的那些」这条颜色分工的一部分。</summary>
+    private static readonly IPen ArrowPen = new Pen(new SolidColorBrush(Colors.White, 0.85), 1);
+
+    /// <summary>箭头本身的笔画。刻意比圆底描边粗，缩小到 18 像素的圆里仍然认得出来。</summary>
+    private static readonly IBrush ArrowGlyphBrush = new SolidColorBrush(Colors.White);
 
     /// <summary>
     /// 色块的不透明度随簇内行数递增。
@@ -585,6 +618,9 @@ public sealed partial class LyricTrackView : Control
         }
 
         if (_marqueeing) DrawMarquee(context, width, height);
+
+        // 箭头的圆底是实心的，必须画在最后：它要盖住压在它底下的那几个字。
+        DrawUnbindArrow(context, height);
     }
 
     /// <summary>
@@ -759,6 +795,49 @@ public sealed partial class LyricTrackView : Control
             new Point(width, y));
     }
 
+    /// <summary>
+    /// 画那个「把选中的这几行移出时间轴」的箭头。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>为什么需要它。</b>拖动能改时刻，但改不出「这一行不该在这份歌词里」这件事：
+    /// 用户可能发现某一行是从别处误粘进来的、或者唱段其实不存在。此前唯一的办法是
+    /// 保存之后用别的编辑器删——那等于让本工具在最常见的清理动作上缺席。
+    /// </para>
+    /// <para>
+    /// <b>为什么只画一个，而不是每个选中的簇各画一个。</b>一次操作的对象是<b>整个选区</b>，
+    /// 画多个箭头会让人以为「点哪个就移出哪个」。整个选区一个箭头，位置取选区在屏幕上的
+    /// 纵向中点，箭头与「这几行」之间的对应关系因此是唯一的。
+    /// </para>
+    /// <para>
+    /// <b>箭头用实心图形，不描轮廓。</b>实心块内部一定有整片的纯白像素，而 1 像素级的描边
+    /// 在抗锯齿下几乎每个像素都是混出来的颜色——「这个按钮在不在、在什么高度」这件事
+    /// 由诊断工具数纯白像素来核对（<c>Preview</c> 的 <c>MeasureUnbindArrow</c>），
+    /// 画法得让那条断言数得到东西。
+    /// </para>
+    /// </remarks>
+    private void DrawUnbindArrow(DrawingContext context, double height)
+    {
+        if (ArrowCenter(height) is not { } center) return;
+
+        context.DrawEllipse(ArrowBackBrush, ArrowPen, center, ArrowRadius, ArrowRadius);
+
+        // 箭头 = 一根横杆 + 一个实心三角，合起来是一个右向箭头。
+        context.FillRectangle(ArrowGlyphBrush, new Rect(center.X - 4, center.Y - 1, 7, 2));
+
+        var head = new StreamGeometry();
+
+        using (var figure = head.Open())
+        {
+            figure.BeginFigure(new Point(center.X + 4, center.Y), true);
+            figure.LineTo(new Point(center.X - 1, center.Y - 4));
+            figure.LineTo(new Point(center.X - 1, center.Y + 4));
+            figure.EndFigure(true);
+        }
+
+        context.DrawGeometry(ArrowGlyphBrush, null, head);
+    }
+
     /// <summary>选中项背后的那块底色，像文本选区那样铺在字下面。</summary>
     private void DrawSelectionBand(DrawingContext context, double textX, double top, double bottom)
     {
@@ -834,28 +913,8 @@ public sealed partial class LyricTrackView : Control
         context.DrawText(stamp, new Point(textX, lineY + LabelOffset));
     }
 
-    private void DrawEmptyHint(DrawingContext context, double width, double height)
-    {
-        if (string.IsNullOrEmpty(EmptyHint)) return;
-
-        var x = Math.Max(TextInset, 0);
-        var available = width - x - 48;
-        if (available < 40) return;
-
-        var text = new FormattedText(
-            EmptyHint,
-            CultureInfo.CurrentCulture,
-            FlowDirection.LeftToRight,
-            LabelTypeface,
-            12.5,
-            HintBrush)
-        {
-            TextAlignment = TextAlignment.Center,
-            MaxTextWidth = available,
-        };
-
-        context.DrawText(text, new Point(x + 24, Math.Max(30, height / 2 - text.Height / 2)));
-    }
+    private void DrawEmptyHint(DrawingContext context, double width, double height) =>
+        TrackText.DrawHint(context, EmptyHint, Math.Max(TextInset, 0), width, height);
 
     // ------------------------------------------------------------ 换行
 
@@ -942,25 +1001,12 @@ public sealed partial class LyricTrackView : Control
     /// 造一段带省略号截断的单行文字。
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// <b>两处上限都不能省。</b><see cref="FormattedText.MaxTextWidth"/> 只设宽度的话，
-    /// 过长的文字是<b>换行</b>而不是截断（<c>Trimming</c> 只在单行排版下才起作用）；
-    /// 而 <see cref="FormattedText.MaxLineCount"/> 钉死行数是更硬的保证：
-    /// 无论文字多长、栏多窄，<see cref="FormattedText.Height"/> 都等于一行的高度，
-    /// 上面那些按行高做的算术才有依据。
-    /// </para>
-    /// <para>
-    /// 时间戳同样给宽度上限：它本身虽短，但 <c>[100:12.34]</c> 这类分钟位超长的写法
-    /// 在小字号下也能占去小半栏宽，那样正文就没地方放了。
-    /// </para>
+    /// 实现在 <see cref="TrackText.Truncated"/> 一处，与未绑定歌词栏共用。这里转发一下，
+    /// 只是为了让本文件里那些调用点读起来短一些；那两条不能省的规矩（
+    /// <c>MaxTextWidth</c> 与 <c>MaxLineCount</c>）连同它们的来历都记在实现那一边。
     /// </remarks>
     private static FormattedText NewText(string text, IBrush brush, double fontSize, double maxWidth) =>
-        new(text, CultureInfo.CurrentCulture, FlowDirection.LeftToRight, LabelTypeface, fontSize, brush)
-        {
-            MaxTextWidth = Math.Max(16, maxWidth),
-            MaxLineCount = 1,
-            Trimming = TextTrimming.CharacterEllipsis,
-        };
+        TrackText.Truncated(text, brush, fontSize, maxWidth);
 
     private static IBrush BlockBrushFor(int count) =>
         BlockBrushes[Math.Clamp(count, 0, BlockBrushes.Length - 1)];

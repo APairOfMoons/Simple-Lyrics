@@ -37,6 +37,9 @@ public sealed unsafe class FfmpegDecoder : IDisposable
 
     private int _audioStream = -1;
 
+    /// <summary>打开时数出来的音频流总字节数（只看包头）；0 表示没数成。</summary>
+    private long _audioBytes;
+
     // 当前重采样器对应的输入参数，用于识别解码中途格式变化。
     private int _inputSampleRate;
     private int _inputChannels;
@@ -283,6 +286,13 @@ public sealed unsafe class FfmpegDecoder : IDisposable
             ? TimeSpan.FromSeconds((double)_format->duration / AvTimeBase)
             : TimeSpan.Zero;
 
+        // 音频流自己的时长优先：容器时长对 ADTS 之类的裸流只能按码率估算，而流的时长
+        // 由该流的最后一个时间戳给出，离真实的音频长度更近。
+        var timeBase = ffmpeg.av_q2d(stream->time_base);
+        var streamDuration = stream->duration > 0 && timeBase > 0
+            ? TimeSpan.FromSeconds(stream->duration * timeBase)
+            : containerDuration;
+
         Info = new AudioFileInfo(
             path,
             ffmpeg.avcodec_get_name(_decoder->codec_id) ?? "?",
@@ -290,11 +300,98 @@ public sealed unsafe class FfmpegDecoder : IDisposable
             sampleRate,
             _decoder->ch_layout.nb_channels,
             containerDuration,
-            stream->codecpar->bit_rate);
+            MeasureAverageBitRate(streamDuration, stream->codecpar->bit_rate));
 
         // 多数情况下解码器此时已经报告了采样格式；少数格式要等第一帧，届时会重建。
         if (_decoder->sample_fmt != AVSampleFormat.AV_SAMPLE_FMT_NONE && _decoder->ch_layout.nb_channels > 0)
             SetupResampler(_decoder->sample_rate, &_decoder->ch_layout, _decoder->sample_fmt);
+    }
+
+    /// <summary>
+    /// 这一段音频的真实平均码率（bit/s）：把<b>这一个音频流</b>的全部包字节数加起来，除以时长。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>不用 <c>codecpar-&gt;bit_rate</c>。</b>那个字段有两处会偏：ADTS 之类的裸流上它是
+    /// FFmpeg 在探测阶段按几帧估出来的；MP4 / M4A 里的 AAC 则是容器 <c>esds</c> 里写的
+    /// <b>标称</b>码率，与真实平均值不是一回事。实测 AAC 上报 228 kbps 而真实值在 250 以上，
+    /// 差了两成——而用户会拿这个数字与转码软件一对，对不上就以为本工具读错了文件。
+    /// 它唯一的作用就是告诉用户「这是什么规格的音频」，所以宁可自己算。
+    /// </para>
+    /// <para>
+    /// <b>也不拿文件大小去除。</b>文件里可能还有封面图、其他流与容器开销，除出来的不是音频码率。
+    /// 这里只累加<b>这一个流</b>的包，封面无论多大都不会算进来。
+    /// </para>
+    /// <para>
+    /// 代价是把容器顺序读一遍——<b>只看包头，不解码</b>。四分钟的歌在毫秒量级，而打开文件之后
+    /// 紧接着就要整曲解码做波形，相比之下可以忽略。读完 seek 回开头，调用方看不出这件事。
+    /// </para>
+    /// <para>
+    /// 算不出来时退回容器上报的那个值：宁可给一个可能偏低的数字，也不要让这一栏空着——
+    /// 空着看不出是「没有这个信息」还是「读失败了」。
+    /// </para>
+    /// </remarks>
+    /// <param name="duration">音频流的时长；为零时无法平均，直接退回上报值。</param>
+    /// <param name="reported">容器上报的码率，作为退路。</param>
+    private long MeasureAverageBitRate(TimeSpan duration, long reported)
+    {
+        if (_format is null || duration <= TimeSpan.Zero) return Math.Max(reported, 0);
+
+        var packet = ffmpeg.av_packet_alloc();
+        if (packet is null) return Math.Max(reported, 0);
+
+        var bytes = 0L;
+
+        try
+        {
+            // 探测阶段可能把读位子留在中间，先明确回到开头再数。
+            ffmpeg.av_seek_frame(_format, -1, 0, ffmpeg.AVSEEK_FLAG_BACKWARD);
+
+            while (ffmpeg.av_read_frame(_format, packet) >= 0)
+            {
+                if (packet->stream_index == _audioStream) bytes += packet->size;
+
+                ffmpeg.av_packet_unref(packet);
+            }
+        }
+        catch (Exception)
+        {
+            // 读不完整就用不上这个平均值——退回上报值，而不是让整个文件打不开。
+            return Math.Max(reported, 0);
+        }
+        finally
+        {
+            ffmpeg.av_packet_free(&packet);
+
+            // 无论数到哪儿都要回到开头：调用方以为解码器还停在起始位置。
+            ffmpeg.av_seek_frame(_format, -1, 0, ffmpeg.AVSEEK_FLAG_BACKWARD);
+        }
+
+        if (bytes <= 0) return Math.Max(reported, 0);
+
+        _audioBytes = bytes;
+
+        return (long)Math.Round(bytes * 8 / duration.TotalSeconds);
+    }
+
+    /// <summary>
+    /// 用<b>精确时长</b>重算平均码率；拿不到精确时长（或没数成字节数）时退回打开时那个值。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 打开文件时只能按容器（或流）声明的时长去平均，而那个时长对 ADTS 之类的裸流是估算的
+    /// ——实测偏差近 30 秒，码率因此会跟着偏小一两成。整曲解码完就有了权威时长
+    /// （<see cref="Peaks.PeakPyramid.Duration"/>，由累计样本数得出），用它再算一遍才是真值。
+    /// </para>
+    /// <para>
+    /// 字节数只数一遍就够（打开时数过），所以这里不读文件，只是换个分母做除法。
+    /// </para>
+    /// </remarks>
+    public long ResolveBitRate(TimeSpan exactDuration)
+    {
+        if (_audioBytes <= 0 || exactDuration <= TimeSpan.Zero) return Info.BitRate;
+
+        return (long)Math.Round(_audioBytes * 8 / exactDuration.TotalSeconds);
     }
 
     // ------------------------------------------------------------ 重采样器
